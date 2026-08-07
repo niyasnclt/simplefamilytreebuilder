@@ -1,0 +1,14 @@
+{
+  "name": "familytreemaking",
+  "version": "1.0.0",
+  "description": "Local family tree builder with templates and PNG/PDF export",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

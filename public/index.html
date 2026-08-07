@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Family Tree Maker</title>
+<link rel="stylesheet" href="./styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🌳</text></svg>">
+</head>
+<body>
+
+<!-- ───────────────────────────────────────────────────────────── library -->
+<section id="library" class="view">
+  <header class="lib-head">
+    <div class="lib-title">
+      <h1>Family Trees</h1>
+      <p id="lib-count" class="muted"></p>
+    </div>
+    <div class="lib-actions">
+      <input id="lib-search" type="search" placeholder="Search trees…" autocomplete="off">
+      <button id="btn-import-json" class="btn ghost">Import JSON</button>
+      <button id="btn-new-outline" class="btn ghost">New from outline</button>
+      <button id="btn-new" class="btn primary">New tree</button>
+    </div>
+  </header>
+  <div id="lib-grid" class="lib-grid"></div>
+  <div id="lib-empty" class="empty" hidden>
+    <p>No trees yet.</p>
+    <button class="btn primary" data-act="new">Create your first tree</button>
+  </div>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────── editor -->
+<section id="editor" class="view" hidden>
+  <header class="topbar">
+    <button id="btn-back" class="btn icon" title="Back to library">←</button>
+    <input id="tree-name" class="name-input" placeholder="Tree name">
+    <input id="tree-sub" class="sub-input" placeholder="Subtitle (optional)">
+    <span id="save-state" class="save-state">Saved</span>
+    <div class="spacer"></div>
+    <label class="field inline">
+      <span>Template</span>
+      <select id="tree-template"></select>
+    </label>
+    <button id="btn-design" class="btn ghost">Design</button>
+    <button id="btn-outline" class="btn ghost">Outline</button>
+    <button id="btn-export" class="btn primary">Export</button>
+  </header>
+
+  <div class="workspace">
+    <aside class="panel left">
+      <div class="panel-head">
+        <span>Structure</span>
+        <button id="btn-collapse-all" class="btn tiny ghost" title="Collapse / expand all">⇕</button>
+      </div>
+      <div id="outline" class="outline"></div>
+    </aside>
+
+    <main class="stage-wrap">
+      <div id="stage-scroll" class="stage-scroll">
+        <div id="stage" class="stage"></div>
+      </div>
+      <div class="zoombar">
+        <button class="btn tiny" data-zoom="out">−</button>
+        <span id="zoom-label">100%</span>
+        <button class="btn tiny" data-zoom="in">+</button>
+        <button class="btn tiny" data-zoom="fit">Fit</button>
+        <button class="btn tiny" data-zoom="100">1:1</button>
+      </div>
+    </main>
+
+    <aside class="panel right">
+      <div class="panel-head"><span>Details</span></div>
+      <div id="inspector" class="inspector"></div>
+    </aside>
+  </div>
+</section>
+
+<div id="modal-root"></div>
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
