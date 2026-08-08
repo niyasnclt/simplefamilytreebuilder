@@ -27,6 +27,8 @@ export function renderSVG(tree, opts = {}) {
     upper: t.nameUpper,
   });
   const g = gutters(t);
+  // The title block reads tree.logo straight off the object, so resolve it here too.
+  const titled = tree.logo ? { ...tree, logo: src(tree.logo) } : tree;
 
   const width = Math.round(L.width + g.left);
   const height = Math.round(L.height + g.top);
@@ -48,7 +50,7 @@ export function renderSVG(tree, opts = {}) {
     svg: `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
 <defs>${watermarkDefs(t)}</defs>
 ${backdrop(t, width, height)}
-${titleBlock(t, tree, width, height)}
+${titleBlock(t, titled, width, height)}
 <g transform="translate(${g.left}, ${g.top})">
 ${body.join('\n')}
 </g>

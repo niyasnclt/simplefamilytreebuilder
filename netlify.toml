@@ -1,0 +1,10 @@
+# No build step — public/ is the site.
+[build]
+  publish = "public"
+  command = ""
+
+# The service worker must never be served stale, or clients pin to an old shell.
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"

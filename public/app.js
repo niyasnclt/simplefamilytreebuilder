@@ -2,6 +2,7 @@ import { renderSVG } from './render.js';
 import { TEMPLATES, byId } from './templates.js';
 import { exportPNG, exportPDF, forgetPhotoCache, download, slug } from './exporter.js';
 import { parseOutline, toOutline, uid } from './outline.js';
+import * as store from './store.js';
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, attrs = {}, ...kids) => {
@@ -15,18 +16,6 @@ const el = (tag, attrs = {}, ...kids) => {
   for (const k of kids.flat()) if (k != null) n.append(k);
   return n;
 };
-
-/* ------------------------------------------------------------------ api */
-
-async function api(path, opts = {}) {
-  const res = await fetch('/api' + path, {
-    headers: opts.body && !opts.raw ? { 'Content-Type': 'application/json' } : undefined,
-    ...opts,
-    body: opts.raw ? opts.body : opts.body ? JSON.stringify(opts.body) : undefined,
-  });
-  if (!res.ok) throw new Error((await res.text()) || res.statusText);
-  return res.status === 204 ? null : res.json();
-}
 
 /* ---------------------------------------------------------------- state */
 
@@ -56,8 +45,9 @@ function toast(msg, kind) {
 /* -------------------------------------------------------------- library */
 
 async function loadLibrary() {
-  state.trees = await api('/trees');
+  state.trees = await store.listTrees();
   renderLibrary();
+  renderStorage();
 }
 
 function renderLibrary() {
@@ -76,7 +66,7 @@ function renderLibrary() {
       const cover = el('div', { class: 'card-cover', style: `background:${tpl.bg}` });
       cover.append(
         t.cover
-          ? el('img', { src: t.cover, alt: '' })
+          ? el('img', { src: store.photoURL(t.cover), alt: '' })
           : el('div', { class: 'glyph', style: `color:${tpl.accent}` }, '🌳')
       );
       return el(
@@ -117,28 +107,45 @@ function when(iso) {
 }
 
 async function duplicateTree(t) {
-  const copy = await api(`/trees/${t.id}/duplicate`, { method: 'POST' });
+  const copy = await store.duplicateTree(t.id);
   await loadLibrary();
   toast(`Duplicated as “${copy.name}”`);
 }
 
 async function deleteTree(t) {
-  const ok = await confirmModal('Delete tree?', `“${t.name}” will be permanently removed. Photos stay on disk.`, 'Delete');
+  const ok = await confirmModal(
+    'Delete tree?',
+    `“${t.name}” will be permanently removed from this browser. Photos used by no other tree are deleted with it.`,
+    'Delete'
+  );
   if (!ok) return;
-  await api(`/trees/${t.id}`, { method: 'DELETE' });
+  await store.deleteTree(t.id);
   await loadLibrary();
   toast('Tree deleted');
 }
 
+/**
+ * A tree's JSON on its own only references photos by hash, so photos are inlined here —
+ * otherwise the file would open on another machine with every portrait blank.
+ */
 async function exportJSON(t) {
-  const full = await api(`/trees/${t.id}`);
-  download(new Blob([JSON.stringify(full, null, 2)], { type: 'application/json' }), `${slug(full.name)}.json`);
+  const full = await store.getTree(t.id);
+  const refs = [...store.collectPhotoRefs(full)];
+  const photos = {};
+  for (const ref of refs) {
+    const data = await store.photoDataURL(ref);
+    if (data) photos[ref] = data;
+  }
+  const payload = { ...full, photos };
+  download(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), `${slug(full.name)}.json`);
 }
 
 /* --------------------------------------------------------- editor: open */
 
 async function openTree(id) {
-  state.tree = await api(`/trees/${id}`);
+  state.tree = await store.getTree(id);
+  // Blob URLs must exist before the first synchronous render pass.
+  await store.primePhotos(state.tree);
   state.selected = { id: state.tree.root.id, side: 'self' };
   state.collapsed = new Set();
   state.dirty = false;
@@ -183,7 +190,7 @@ async function flushSave() {
   state.saving = true;
   const snapshot = state.tree;
   try {
-    await api(`/trees/${snapshot.id}`, { method: 'PUT', body: snapshot });
+    await store.saveTree(snapshot);
     if (state.tree === snapshot) {
       state.dirty = false;
       $('#save-state').textContent = 'Saved';
@@ -351,7 +358,11 @@ const escapeHtml = (s) =>
 let lastSize = { width: 1, height: 1 };
 
 function renderStage() {
-  const { svg, width, height } = renderSVG(state.tree, { selected: state.selected, interactive: true });
+  const { svg, width, height } = renderSVG(state.tree, {
+    selected: state.selected,
+    interactive: true,
+    photoSrc: store.photoURL,
+  });
   lastSize = { width, height };
   const stage = $('#stage');
   stage.innerHTML = svg;
@@ -460,7 +471,7 @@ function textField(label, value, onInput, id, placeholder) {
 }
 
 function photoField(url, onSet) {
-  const img = el('img', { class: 'photo-thumb', src: url || transparentPixel(), alt: '' });
+  const img = el('img', { class: 'photo-thumb', src: url ? store.photoURL(url) : transparentPixel(), alt: '' });
   const file = el('input', { type: 'file', accept: 'image/*', style: 'display:none' });
   file.addEventListener('change', async () => {
     const f = file.files[0];
@@ -491,15 +502,7 @@ function photoField(url, onSet) {
 const transparentPixel = () =>
   'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="54" height="54"/>');
 
-async function uploadPhoto(file) {
-  const res = await fetch('/api/photos', {
-    method: 'POST',
-    headers: { 'Content-Type': file.type },
-    body: file,
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return (await res.json()).url;
-}
+const uploadPhoto = (file) => store.putPhoto(file);
 
 /* -------------------------------------------------------------- modals */
 
@@ -604,7 +607,7 @@ function newTreeModal(withOutline) {
       if (!root) return toast('Add at least one name to the outline', 'err');
       body.root = root;
     }
-    const tree = await api('/trees', { method: 'POST', body });
+    const tree = await store.createTree(body);
     m.close();
     await loadLibrary();
     openTree(tree.id);
@@ -632,14 +635,14 @@ function designModal() {
     return row;
   };
 
-  const logoImg = el('img', { class: 'photo-thumb', src: t.logo || transparentPixel(), alt: '' });
+  const logoImg = el('img', { class: 'photo-thumb', src: t.logo ? store.photoURL(t.logo) : transparentPixel(), alt: '' });
   const logoFile = el('input', { type: 'file', accept: 'image/*', style: 'display:none' });
   logoFile.addEventListener('change', async () => {
     const f = logoFile.files[0];
     if (!f) return;
     try {
       t.logo = await uploadPhoto(f);
-      logoImg.src = t.logo;
+      logoImg.src = store.photoURL(t.logo);
       markDirty();
       renderStage();
     } catch (e) {
@@ -803,29 +806,97 @@ function exportModal() {
   }
 }
 
+/* ------------------------------------------------------- backup/restore */
+
+const KB = 1024;
+const MB = KB * 1024;
+const GB = MB * 1024;
+const size = (n) =>
+  n >= GB ? `${(n / GB).toFixed(1)} GB` : n >= MB ? `${(n / MB).toFixed(1)} MB` : `${Math.round(n / KB)} KB`;
+
+async function renderStorage() {
+  const line = $('#lib-storage');
+  const u = await store.usage();
+  if (!u) {
+    line.textContent = 'Saved in this browser only.';
+    return;
+  }
+  const room = u.quota ? ` of about ${size(u.quota)} available` : '';
+  line.textContent = `${size(u.used)} used${room} — saved in this browser only, never uploaded.`;
+}
+
+async function backupAll() {
+  if (!state.trees.length) return toast('Nothing to back up yet');
+  toast('Preparing backup…');
+  const data = await store.exportAll();
+  const stamp = new Date().toISOString().slice(0, 10);
+  download(new Blob([JSON.stringify(data)], { type: 'application/json' }), `family-trees-backup-${stamp}.json`);
+}
+
+function restoreFlow() {
+  pickFile('application/json', async (f) => {
+    const data = JSON.parse(await f.text());
+    const treeCount = (data.trees || []).length;
+    const mode = await restoreModeModal(treeCount, (data.photos || []).length);
+    if (!mode) return;
+    const n = await store.importAll(data, { replace: mode === 'replace' });
+    await loadLibrary();
+    toast(`Restored ${n} tree${n === 1 ? '' : 's'}`);
+  });
+}
+
+function restoreModeModal(trees, photos) {
+  return new Promise((resolve) => {
+    const m = modal({
+      title: 'Restore backup',
+      body: el('p', {}, `This file holds ${trees} tree${trees === 1 ? '' : 's'} and ${photos} photo${photos === 1 ? '' : 's'}. Merge keeps what you already have; replace wipes this browser's trees first.`),
+      foot: [
+        el('button', { class: 'btn ghost', onclick: () => { m.close(); resolve(null); } }, 'Cancel'),
+        el('button', { class: 'btn primary danger', onclick: () => { m.close(); resolve('replace'); } }, 'Replace everything'),
+        el('button', { class: 'btn primary', onclick: () => { m.close(); resolve('merge'); } }, 'Merge'),
+      ],
+    });
+  });
+}
+
+/** One-shot hidden file input, cleaned up after the pick. */
+function pickFile(accept, onFile) {
+  const input = el('input', { type: 'file', accept, style: 'display:none' });
+  input.addEventListener('change', async () => {
+    const f = input.files[0];
+    if (f) {
+      try {
+        await onFile(f);
+      } catch (e) {
+        toast('Failed: ' + e.message, 'err');
+      }
+    }
+    input.remove();
+  });
+  document.body.append(input);
+  input.click();
+}
+
 /* --------------------------------------------------------- json import */
 
 function importJSONFlow() {
-  const file = el('input', { type: 'file', accept: 'application/json', style: 'display:none' });
-  file.addEventListener('change', async () => {
-    const f = file.files[0];
-    if (!f) return;
-    try {
-      const data = JSON.parse(await f.text());
-      if (!data.root) throw new Error('not a tree file');
-      const tree = await api('/trees', {
-        method: 'POST',
-        body: { name: data.name, subtitle: data.subtitle, template: data.template, logo: data.logo, root: data.root },
-      });
-      await loadLibrary();
-      toast(`Imported “${tree.name}”`);
-    } catch (e) {
-      toast('Import failed: ' + e.message, 'err');
-    }
-    file.remove();
+  pickFile('application/json', async (f) => {
+    const data = JSON.parse(await f.text());
+    if (!data.root) throw new Error('not a tree file');
+    // Files exported by this app carry their photos inline; older file-backed exports don't.
+    if (data.photos) await store.adoptPhotos(data.photos);
+    const tree = await store.createTree({
+      name: data.name,
+      subtitle: data.subtitle,
+      template: data.template,
+      layout: data.layout,
+      maxCols: data.maxCols,
+      logo: data.logo,
+      root: data.root,
+    });
+    await loadLibrary();
+    toast(`Imported “${tree.name}”`);
   });
-  document.body.append(file);
-  file.click();
 }
 
 /* --------------------------------------------------------------- wiring */
@@ -838,6 +909,8 @@ function boot() {
   $('#btn-new').onclick = () => newTreeModal(false);
   $('#btn-new-outline').onclick = () => newTreeModal(true);
   $('#btn-import-json').onclick = importJSONFlow;
+  $('#btn-backup').onclick = () => backupAll().catch((e) => toast('Backup failed: ' + e.message, 'err'));
+  $('#btn-restore').onclick = restoreFlow;
   $('#lib-empty').querySelector('[data-act=new]').onclick = () => newTreeModal(false);
   $('#lib-search').addEventListener('input', (e) => { state.query = e.target.value; renderLibrary(); });
 
@@ -893,7 +966,29 @@ function boot() {
     if (e.key === 'Tab' && state.selected) { e.preventDefault(); addSibling(state.selected.id); }
   });
 
-  loadLibrary().catch((e) => toast('Could not load trees: ' + e.message, 'err'));
+  // Ask the browser not to evict this origin's data during routine cleanups.
+  store.requestPersistence();
+  seedDemoOnce()
+    .then(loadLibrary)
+    .catch((e) => toast('Could not load trees: ' + e.message, 'err'));
+}
+
+const SEED_FLAG = 'familytree.seeded';
+
+/**
+ * First visit gets the sample tree so the app isn't a blank page. The flag is set before
+ * seeding, so deleting the sample keeps it deleted and a failure never retries forever.
+ */
+async function seedDemoOnce() {
+  if (localStorage.getItem(SEED_FLAG)) return;
+  localStorage.setItem(SEED_FLAG, '1');
+  try {
+    if ((await store.listTrees()).length) return;
+    const { createDemoTree } = await import('./demo.js');
+    await createDemoTree();
+  } catch {
+    /* an empty library is a perfectly good fallback */
+  }
 }
 
 boot();

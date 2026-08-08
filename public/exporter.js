@@ -1,29 +1,17 @@
 import { renderSVG } from './render.js';
+import { photoDataURL } from './store.js';
 
 const MAX_CANVAS_DIM = 15000; // stay clear of browser canvas limits
 
 /* ------------------------------------------------------ photo inlining */
 
+// A rasterised SVG can't reference blob: URLs, so every photo is inlined as a data URI.
 const cache = new Map();
 
-async function toDataURL(url) {
-  if (cache.has(url)) return cache.get(url);
-  const p = fetch(url)
-    .then((r) => {
-      if (!r.ok) throw new Error(`photo ${url}: ${r.status}`);
-      return r.blob();
-    })
-    .then(
-      (b) =>
-        new Promise((res, rej) => {
-          const fr = new FileReader();
-          fr.onload = () => res(fr.result);
-          fr.onerror = rej;
-          fr.readAsDataURL(b);
-        })
-    )
-    .catch(() => null); // a missing photo shouldn't sink the whole export
-  cache.set(url, p);
+async function toDataURL(ref) {
+  if (cache.has(ref)) return cache.get(ref);
+  const p = photoDataURL(ref).catch(() => null); // a missing photo shouldn't sink the whole export
+  cache.set(ref, p);
   return p;
 }
 

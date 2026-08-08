@@ -4,8 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Family Tree Maker</title>
+<meta name="description" content="Build family trees with photos and export them as PNG or PDF. Everything stays in your browser.">
+<meta name="theme-color" content="#F6F1E7">
 <link rel="stylesheet" href="./styles.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🌳</text></svg>">
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="./icon.svg">
 </head>
 <body>
 
@@ -15,9 +19,12 @@
     <div class="lib-title">
       <h1>Family Trees</h1>
       <p id="lib-count" class="muted"></p>
+      <p id="lib-storage" class="muted tiny"></p>
     </div>
     <div class="lib-actions">
       <input id="lib-search" type="search" placeholder="Search trees…" autocomplete="off">
+      <button id="btn-backup" class="btn ghost" title="Download every tree and photo as one file">Backup</button>
+      <button id="btn-restore" class="btn ghost" title="Restore from a backup file">Restore</button>
       <button id="btn-import-json" class="btn ghost">Import JSON</button>
       <button id="btn-new-outline" class="btn ghost">New from outline</button>
       <button id="btn-new" class="btn primary">New tree</button>
@@ -27,6 +34,7 @@
   <div id="lib-empty" class="empty" hidden>
     <p>No trees yet.</p>
     <button class="btn primary" data-act="new">Create your first tree</button>
+    <p class="muted tiny">Trees and photos are saved in this browser only — nothing is uploaded.</p>
   </div>
 </section>
 
@@ -80,5 +88,11 @@
 <div id="toast" class="toast" hidden></div>
 
 <script type="module" src="./app.js"></script>
+<script>
+  // Registered from a relative path so the app also works from a subdirectory (e.g. GitHub Pages).
+  if ('serviceWorker' in navigator) {
+    addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+  }
+</script>
 </body>
 </html>
