@@ -180,6 +180,7 @@ async function sweepPhotos() {
       URL.revokeObjectURL(url);
       urls.delete(ref);
     }
+    dims.delete(ref);
   }
 }
 
@@ -187,6 +188,10 @@ async function sweepPhotos() {
 
 // ref -> blob: URL, so render passes stay synchronous.
 const urls = new Map();
+
+// ref -> {w,h} in natural pixels. Placing a zoomed or panned crop needs the real
+// aspect ratio, which the SVG can't tell us, so it's measured once and cached here.
+const dims = new Map();
 
 async function contentHash(buffer) {
   if (globalThis.crypto?.subtle) {
@@ -223,6 +228,7 @@ export async function putPhoto(file) {
   if (!existing) await done(store.put({ ref, blob, bytes: blob.size }));
 
   if (!urls.has(ref)) urls.set(ref, URL.createObjectURL(blob));
+  await measure(ref, blob);
   return ref;
 }
 
@@ -232,17 +238,57 @@ export function photoURL(ref) {
   return urls.get(ref) || ref;
 }
 
+/** Natural size of a stored photo, or null if it hasn't been measured yet. */
+export function photoSize(ref) {
+  return dims.get(ref) || null;
+}
+
+/** Seed the size cache from an <img> that has already decoded elsewhere. */
+export function rememberPhotoSize(ref, w, h) {
+  if (ref && w > 0 && h > 0 && !dims.has(ref)) dims.set(ref, { w, h });
+}
+
 export async function primeRefs(refs) {
-  const missing = [...new Set(refs)].filter((r) => r && !urls.has(r));
+  const missing = [...new Set(refs)].filter((r) => r && !(urls.has(r) && dims.has(r)));
   if (!missing.length) return;
   const store = await objectStore('photos');
   await Promise.all(
     missing.map(async (ref) => {
       const rec = await done(store.get(ref)).catch(() => null);
-      if (rec?.blob) urls.set(ref, URL.createObjectURL(rec.blob));
+      if (!rec?.blob) return;
+      if (!urls.has(ref)) urls.set(ref, URL.createObjectURL(rec.blob));
+      await measure(ref, rec.blob);
     })
   );
 }
+
+async function measure(ref, blob) {
+  if (dims.has(ref)) return;
+  try {
+    const bitmap = await createImageBitmap(blob);
+    dims.set(ref, { w: bitmap.width, h: bitmap.height });
+    bitmap.close?.();
+    return;
+  } catch {
+    /* some browsers refuse certain formats here; fall through to an <img> decode */
+  }
+  const url = urls.get(ref) || URL.createObjectURL(blob);
+  try {
+    const img = await decode(url);
+    dims.set(ref, { w: img.naturalWidth, h: img.naturalHeight });
+  } catch {
+    /* leave it unmeasured — render falls back to a centred cover crop */
+  }
+  if (!urls.has(ref)) URL.revokeObjectURL(url);
+}
+
+const decode = (src) =>
+  new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('decode failed'));
+    img.src = src;
+  });
 
 export const primePhotos = (tree) => primeRefs([...collectPhotoRefs(tree)]);
 

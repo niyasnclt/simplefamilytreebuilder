@@ -196,6 +196,29 @@ textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, m
   object-fit: cover; display: block;
 }
 .photo-btns { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+/* Framed thumbnail: the img is positioned, so the crop matches the canvas. */
+.photo-frame { position: relative; overflow: hidden; padding: 0; }
+.photo-frame.sq { border-radius: 28%; }
+.photo-frame > img { position: absolute; display: block; max-width: none; }
+
+/* ------------------------------------------------------- photo framing */
+
+.frame-wrap { display: flex; justify-content: center; }
+.frame-box {
+  position: relative; width: 280px; height: 280px; flex: 0 0 280px;
+  border-radius: 50%; overflow: hidden; background: var(--bg-3);
+  border: 1px solid var(--line-2); box-shadow: 0 0 0 6px var(--bg-2), 0 0 0 7px var(--line);
+  cursor: grab; touch-action: none; user-select: none;
+}
+.frame-box.sq { border-radius: 28%; }
+.frame-box.dragging { cursor: grabbing; }
+.frame-box.locked { cursor: default; }
+.frame-box > img { position: absolute; display: block; max-width: none; pointer-events: none; }
+.frame-zoom { display: flex; align-items: center; gap: 10px; margin-top: 18px; font-size: 13px; }
+.frame-zoom > span:first-child { color: var(--text-mute); flex: 0 0 auto; }
+.frame-zoom > input { flex: 1; accent-color: var(--accent); }
+.frame-zoom-val { flex: 0 0 46px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-mute); }
+.frame-hint { margin: 10px 0 0; font-size: 12px; line-height: 1.5; }
 .insp-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .insp-actions .btn { flex: 1 1 auto; }
 

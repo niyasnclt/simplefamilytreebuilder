@@ -7,12 +7,62 @@ const esc = (s) =>
 
 const safeId = (s) => String(s).replace(/[^A-Za-z0-9_-]/g, '_');
 
+const r2 = (n) => Math.round(n * 100) / 100;
+
+/**
+ * How a photo sits inside its frame: `zoom` 1 is the tightest crop that still
+ * covers it, and `x`/`y` slide the overflow — 0 is left/top, 1 is right/bottom.
+ * The default is a centred cover, which is what the app did before framing existed.
+ */
+export const DEFAULT_FIT = { zoom: 1, x: 0.5, y: 0.5 };
+export const MAX_ZOOM = 4;
+
+const clamp = (v, lo, hi, fallback) =>
+  Number.isFinite(+v) ? Math.min(hi, Math.max(lo, +v)) : fallback;
+
+export function normalizeFit(fit) {
+  if (!fit) return DEFAULT_FIT;
+  return {
+    zoom: clamp(fit.zoom, 1, MAX_ZOOM, 1),
+    x: clamp(fit.x, 0, 1, 0.5),
+    y: clamp(fit.y, 0, 1, 0.5),
+  };
+}
+
+export const isDefaultFit = (fit) => {
+  const f = normalizeFit(fit);
+  return f.zoom === 1 && f.x === 0.5 && f.y === 0.5;
+};
+
+/**
+ * Where a photo's pixels land inside a `size`-wide square frame.
+ *
+ * Shared with the framing dialog so its preview and the exported SVG agree. When the
+ * natural size is unknown the browser's own centred cover stands in; zoom still works,
+ * but panning has nothing to slide because the box stays square.
+ */
+export function fitRect(fit, size, natural) {
+  const f = normalizeFit(fit);
+  const known = natural && natural.w > 0 && natural.h > 0;
+  const scale = known ? Math.max(size / natural.w, size / natural.h) * f.zoom : null;
+  const w = known ? natural.w * scale : size * f.zoom;
+  const h = known ? natural.h * scale : size * f.zoom;
+  return {
+    x: -(w - size) * f.x,
+    y: -(h - size) * f.y,
+    w,
+    h,
+    // w/h already carry the aspect ratio, so 'none' scales without distorting.
+    preserveAspectRatio: known ? 'none' : 'xMidYMid slice',
+  };
+}
 
 /**
  * Build the full SVG for a tree.
  * @param {object} tree
  * @param {object} [opts]
  * @param {(url:string)=>string} [opts.photoSrc] map a stored photo URL to an <image href> (used to inline data URIs on export)
+ * @param {(url:string)=>({w:number,h:number}|null)} [opts.photoSize] natural pixel size of a stored photo, for framing
  * @param {{id:string,side:string}} [opts.selected]
  * @param {boolean} [opts.interactive] add hit targets + data attributes
  */
@@ -75,8 +125,10 @@ function nodeMarkup(n, t, src, opts) {
   out.push(`<clipPath id="${cid}">${shape}</clipPath>`);
 
   if (n.photo) {
+    const box = fitRect(n.photoFit, d, opts.photoSize ? opts.photoSize(n.photo) : null);
+    const href = esc(src(n.photo));
     out.push(
-      `<image href="${esc(src(n.photo))}" xlink:href="${esc(src(n.photo))}" x="${n.x}" y="${n.y}" width="${d}" height="${d}" preserveAspectRatio="xMidYMid slice" clip-path="url(#${cid})"/>`
+      `<image href="${href}" xlink:href="${href}" x="${r2(n.x + box.x)}" y="${r2(n.y + box.y)}" width="${r2(box.w)}" height="${r2(box.h)}" preserveAspectRatio="${box.preserveAspectRatio}" clip-path="url(#${cid})"/>`
     );
   } else {
     out.push(placeholder(n, t, cid));

@@ -1,4 +1,4 @@
-import { renderSVG } from './render.js';
+import { renderSVG, fitRect, normalizeFit, isDefaultFit, DEFAULT_FIT, MAX_ZOOM } from './render.js';
 import { TEMPLATES, byId } from './templates.js';
 import { exportPNG, exportPDF, forgetPhotoCache, download, slug } from './exporter.js';
 import { parseOutline, toOutline, uid } from './outline.js';
@@ -362,6 +362,7 @@ function renderStage() {
     selected: state.selected,
     interactive: true,
     photoSrc: store.photoURL,
+    photoSize: store.photoSize,
   });
   lastSize = { width, height };
   const stage = $('#stage');
@@ -409,7 +410,7 @@ function renderInspector() {
       'Person',
       textField('Name', p.name, (v) => { p.name = v; markDirty(); renderOutline(); renderStage(); }, 'insp-name'),
       textField('Note (shown in brackets)', p.note, (v) => { p.note = v; markDirty(); renderOutline(); renderStage(); }, null, 'e.g. Late'),
-      photoField(p.photo, async (url) => { p.photo = url; markDirty(); renderStage(); renderInspector(); })
+      photoField(p, () => { markDirty(); renderStage(); renderInspector(); })
     )
   );
 
@@ -419,7 +420,7 @@ function renderInspector() {
         'Spouse',
         textField('Name', p.spouse.name, (v) => { p.spouse.name = v; markDirty(); renderOutline(); renderStage(); }),
         textField('Note', p.spouse.note, (v) => { p.spouse.note = v; markDirty(); renderStage(); }, null, 'e.g. Late'),
-        photoField(p.spouse.photo, async (url) => { p.spouse.photo = url; markDirty(); renderStage(); renderInspector(); }),
+        photoField(p.spouse, () => { markDirty(); renderStage(); renderInspector(); }),
         el('button', { class: 'btn tiny ghost danger', onclick: () => setSpouse(p.id, false) }, 'Remove spouse')
       )
     );
@@ -470,34 +471,72 @@ function textField(label, value, onInput, id, placeholder) {
   return el('label', { class: 'field' }, el('span', {}, label), input);
 }
 
-function photoField(url, onSet) {
-  const img = el('img', { class: 'photo-thumb', src: url ? store.photoURL(url) : transparentPixel(), alt: '' });
+/**
+ * Photo controls for whoever owns a `photo` field — a person or their spouse.
+ * Mutates the owner in place and calls `onChange` so the caller can save and repaint.
+ */
+function photoField(owner, onChange) {
   const file = el('input', { type: 'file', accept: 'image/*', style: 'display:none' });
   file.addEventListener('change', async () => {
     const f = file.files[0];
     if (!f) return;
     try {
-      const url = await uploadPhoto(f);
-      onSet(url);
+      owner.photo = await uploadPhoto(f);
+      owner.photoFit = null; // a different picture wants framing of its own
+      onChange();
       toast('Photo added');
     } catch (e) {
       toast('Upload failed: ' + e.message, 'err');
     }
     file.value = '';
   });
+
+  const adjust = async () => {
+    const fit = await framePhotoModal(owner.photo, owner.photoFit);
+    if (fit === undefined) return; // dismissed
+    owner.photoFit = fit;
+    onChange();
+  };
+
+  const remove = () => {
+    owner.photo = null;
+    owner.photoFit = null;
+    onChange();
+  };
+
   return el(
     'div',
     { class: 'photo-row' },
-    img,
+    owner.photo ? thumb(owner) : el('img', { class: 'photo-thumb', src: transparentPixel(), alt: '' }),
     el(
       'div',
       { class: 'photo-btns' },
-      el('button', { class: 'btn tiny', onclick: () => file.click() }, url ? 'Replace photo' : 'Upload photo'),
-      url ? el('button', { class: 'btn tiny ghost', onclick: () => onSet(null) }, 'Remove') : null,
+      el('button', { class: 'btn tiny', onclick: () => file.click() }, owner.photo ? 'Replace photo' : 'Upload photo'),
+      owner.photo ? el('button', { class: 'btn tiny', onclick: adjust }, 'Adjust framing') : null,
+      owner.photo ? el('button', { class: 'btn tiny ghost', onclick: remove }, 'Remove') : null,
       file
     )
   );
 }
+
+/** Thumbnail that shows the chosen framing rather than a plain centred crop. */
+function thumb(owner) {
+  const size = 54;
+  const box = fitRect(owner.photoFit, size, store.photoSize(owner.photo));
+  return el(
+    'div',
+    { class: 'photo-thumb photo-frame' + (portraitShape() === 'squircle' ? ' sq' : '') },
+    el('img', {
+      src: store.photoURL(owner.photo),
+      alt: '',
+      style: `left:${box.x}px;top:${box.y}px;width:${box.w}px;height:${box.h}px;object-fit:${
+        box.preserveAspectRatio === 'none' ? 'fill' : 'cover'
+      }`,
+    })
+  );
+}
+
+const portraitShape = () => byId(state.tree ? state.tree.template : '').shape;
 
 const transparentPixel = () =>
   'data:image/svg+xml,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="54" height="54"/>');
@@ -506,7 +545,7 @@ const uploadPhoto = (file) => store.putPhoto(file);
 
 /* -------------------------------------------------------------- modals */
 
-function modal({ title, body, foot, wide }) {
+function modal({ title, body, foot, wide, onDismiss }) {
   const back = el('div', { class: 'modal-back' });
   const box = el(
     'div',
@@ -516,8 +555,10 @@ function modal({ title, body, foot, wide }) {
     el('div', { class: 'modal-foot' }, ...[foot].flat().filter(Boolean))
   );
   back.append(box);
-  back.addEventListener('mousedown', (e) => { if (e.target === back) close(); });
-  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  // Backing out counts as a dismissal; a button calling close() directly does not.
+  const dismiss = () => { close(); onDismiss?.(); };
+  back.addEventListener('mousedown', (e) => { if (e.target === back) dismiss(); });
+  const onKey = (e) => { if (e.key === 'Escape') dismiss(); };
   document.addEventListener('keydown', onKey);
   function close() {
     document.removeEventListener('keydown', onKey);
@@ -535,6 +576,110 @@ function confirmModal(title, message, confirmLabel = 'OK') {
       foot: [
         el('button', { class: 'btn ghost', onclick: () => { m.close(); resolve(false); } }, 'Cancel'),
         el('button', { class: 'btn primary danger', onclick: () => { m.close(); resolve(true); } }, confirmLabel),
+      ],
+    });
+  });
+}
+
+/* ----------------------------------------------------------- photo framing */
+
+const FRAME_PREVIEW = 280; // px; the preview is square, like the portrait slot
+
+/**
+ * Pan and zoom a photo inside its portrait frame.
+ *
+ * The preview places the <img> with the very same maths the SVG uses, so what you nudge
+ * here is what gets exported. Resolves to the new fit, `null` when it's back to the
+ * default centred crop, or `undefined` if the dialog was dismissed.
+ */
+async function framePhotoModal(ref, current) {
+  await store.primeRefs([ref]); // we need the natural size before we can place anything
+  const fit = { ...normalizeFit(current) };
+  let natural = store.photoSize(ref);
+
+  const img = el('img', { src: store.photoURL(ref), alt: '', draggable: 'false' });
+  const frame = el('div', { class: 'frame-box' + (portraitShape() === 'squircle' ? ' sq' : '') }, img);
+  const zoom = el('input', { type: 'range', min: '1', max: String(MAX_ZOOM), step: '0.01', value: String(fit.zoom) });
+  const zoomOut = el('span', { class: 'frame-zoom-val' });
+
+  // A photo that failed to measure earlier still decodes here, so take the size from
+  // the element and hand it back to the store — the stage render needs it too.
+  img.addEventListener('load', () => {
+    if (natural) return;
+    natural = { w: img.naturalWidth, h: img.naturalHeight };
+    store.rememberPhotoSize(ref, natural.w, natural.h);
+    paint();
+  });
+
+  function paint() {
+    const box = fitRect(fit, FRAME_PREVIEW, natural);
+    img.style.left = box.x + 'px';
+    img.style.top = box.y + 'px';
+    img.style.width = box.w + 'px';
+    img.style.height = box.h + 'px';
+    img.style.objectFit = box.preserveAspectRatio === 'none' ? 'fill' : 'cover';
+    zoom.value = String(fit.zoom);
+    zoomOut.textContent = Math.round(fit.zoom * 100) + '%';
+    frame.classList.toggle('locked', !panRoom().x && !panRoom().y);
+  }
+
+  /** How many pixels of overflow there are to slide in each axis. */
+  function panRoom() {
+    const box = fitRect(fit, FRAME_PREVIEW, natural);
+    return { x: Math.max(0, box.w - FRAME_PREVIEW), y: Math.max(0, box.h - FRAME_PREVIEW) };
+  }
+
+  const clamp01 = (v) => Math.min(1, Math.max(0, v));
+  const setZoom = (z) => { fit.zoom = Math.min(MAX_ZOOM, Math.max(1, z)); paint(); };
+
+  frame.addEventListener('pointerdown', (e) => {
+    const room = panRoom();
+    if (!room.x && !room.y) return;
+    const from = { px: e.clientX, py: e.clientY, x: fit.x, y: fit.y };
+    frame.setPointerCapture(e.pointerId);
+    frame.classList.add('dragging');
+
+    const move = (ev) => {
+      // Dragging right should uncover what sits off the left edge, so the fraction falls.
+      if (room.x) fit.x = clamp01(from.x - (ev.clientX - from.px) / room.x);
+      if (room.y) fit.y = clamp01(from.y - (ev.clientY - from.py) / room.y);
+      paint();
+    };
+    const done = () => {
+      frame.removeEventListener('pointermove', move);
+      frame.classList.remove('dragging');
+      frame.releasePointerCapture?.(e.pointerId);
+    };
+    frame.addEventListener('pointermove', move);
+    frame.addEventListener('pointerup', done, { once: true });
+    frame.addEventListener('pointercancel', done, { once: true });
+    e.preventDefault();
+  });
+
+  frame.addEventListener('wheel', (e) => { e.preventDefault(); setZoom(fit.zoom * (e.deltaY < 0 ? 1.08 : 1 / 1.08)); }, { passive: false });
+  zoom.addEventListener('input', () => setZoom(+zoom.value));
+
+  paint();
+
+  return new Promise((resolve) => {
+    const m = modal({
+      title: 'Adjust framing',
+      onDismiss: () => resolve(undefined),
+      body: [
+        el('div', { class: 'frame-wrap' }, frame),
+        el('label', { class: 'frame-zoom' }, el('span', {}, 'Zoom'), zoom, zoomOut),
+        el('p', { class: 'muted frame-hint' }, 'Drag the photo to move it, scroll or use the slider to zoom. Only the part inside the ring is printed.'),
+      ],
+      foot: [
+        el('button', {
+          class: 'btn ghost',
+          onclick: () => { Object.assign(fit, DEFAULT_FIT); paint(); },
+        }, 'Reset'),
+        el('button', { class: 'btn ghost', onclick: () => { m.close(); resolve(undefined); } }, 'Cancel'),
+        el('button', {
+          class: 'btn primary',
+          onclick: () => { m.close(); resolve(isDefaultFit(fit) ? null : { ...fit }); },
+        }, 'Apply'),
       ],
     });
   });

@@ -1,5 +1,5 @@
 import { renderSVG } from './render.js';
-import { photoDataURL } from './store.js';
+import { photoDataURL, photoSize, primeRefs } from './store.js';
 
 const MAX_CANVAS_DIM = 15000; // stay clear of browser canvas limits
 
@@ -36,12 +36,16 @@ function collectPhotos(tree) {
 async function renderToCanvas(tree, scale, onProgress) {
   const urls = collectPhotos(tree);
   onProgress?.(`Embedding ${urls.length} photo${urls.length === 1 ? '' : 's'}…`);
+  // Framing reads each photo's natural size. A tree exported straight from the library
+  // may never have been rendered on the stage, so measure before laying anything out.
+  await primeRefs(urls);
   const pairs = await Promise.all(urls.map(async (u) => [u, await toDataURL(u)]));
   const map = new Map(pairs);
   const inlined = { ...tree, logo: tree.logo ? map.get(tree.logo) || tree.logo : null };
 
   const { svg, width, height } = renderSVG(inlined, {
     photoSrc: (u) => map.get(u) || u,
+    photoSize,
   });
 
   const fit = Math.min(1, MAX_CANVAS_DIM / Math.max(width * scale, height * scale));

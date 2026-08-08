@@ -5,7 +5,7 @@
  * Bump CACHE when you ship a change, or clients keep serving the old shell.
  */
 
-const CACHE = 'familytree-v1';
+const CACHE = 'familytree-v2';
 
 const SHELL = [
   './',
