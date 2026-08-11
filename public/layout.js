@@ -170,27 +170,37 @@ function emitCouple(out, person, x, y, d, kind, lines) {
   }
 }
 
-/** Draw a person's leaf children hanging in rows below their portrait. */
-function emitLeaves(out, node, unitCX, headBottom) {
+/**
+ * Draw a person's leaf children hanging in rows below their portrait.
+ *
+ * A couple's line meets the tree at the middle of their marriage link rather
+ * than at the top of a portrait — otherwise it stops in the gap between the two
+ * of them and reads as unattached.
+ */
+function emitLeaves(out, node, unitCX, headY) {
   const u = node._u;
   if (!u.rows.length) return;
+  const headBottom = headY + M.headPhoto;
   let rowTop = headBottom + M.leafDrop;
   let lastBusY = headBottom;
   for (const row of u.rows) {
     const busY = rowTop - M.leafDrop / 2;
     let cx = unitCX - row.w / 2;
-    const centers = [];
+    const joins = [];
     for (const item of row.items) {
       emitCouple(out, item.person, cx, rowTop, M.leafPhoto, 'leaf', item.lines);
-      centers.push(cx + item.w / 2);
+      const paired = item.w > M.leafPhoto;
+      joins.push({ x: cx + item.w / 2, y: rowTop + (paired ? M.leafPhoto / 2 : 0) });
       cx += item.w + M.leafGap;
     }
-    out.edges.push(`M ${Math.min(unitCX, ...centers)} ${busY} H ${Math.max(unitCX, ...centers)}`);
-    for (const c of centers) out.edges.push(`M ${c} ${busY} V ${rowTop}`);
+    const xs = joins.map((j) => j.x);
+    out.edges.push(`M ${Math.min(unitCX, ...xs)} ${busY} H ${Math.max(unitCX, ...xs)}`);
+    for (const j of joins) out.edges.push(`M ${j.x} ${busY} V ${j.y}`);
     lastBusY = busY;
     rowTop += M.leafPhoto + row.nameH + M.leafRowGap;
   }
-  out.edges.push(`M ${unitCX} ${headBottom} V ${lastBusY}`);
+  const from = coupleWidth(node, M.headPhoto) > M.headPhoto ? headY + M.headPhoto / 2 : headBottom;
+  out.edges.push(`M ${unitCX} ${from} V ${lastBusY}`);
 }
 
 /* -------------------------------------------------------- mode: 'flow' */
@@ -222,10 +232,17 @@ function layoutFlow(root, maxCols) {
   const colStep = widest + M.flowGap;
   const colCX = (col) => M.pad + col * colStep + widest / 2;
 
+  // Everyone in a band shares one portrait centre line, whatever their names
+  // wrapped to — otherwise a two-line name shunts its portrait down and the
+  // connector to it has to detour round the offset.
   let y = M.pad;
   for (const band of bands) {
     band.top = y;
-    band.h = band.items.reduce((a, it) => Math.max(a, it.node._u.selfH), 1);
+    band.nameH = band.items.reduce((a, it) => Math.max(a, it.node._u.headNameH), 0);
+    band.h = band.items.reduce(
+      (a, it) => Math.max(a, band.nameH + M.headPhoto + it.node._u.leafBlockH),
+      1
+    );
     y += band.h + M.sibGap;
   }
   const bandsBottom = bands.length ? y - M.sibGap : M.pad + root._u.selfH;
@@ -233,26 +250,31 @@ function layoutFlow(root, maxCols) {
   const out = { nodes: [], edges: [] };
   const pos = new Map();
 
-  const placeUnit = (node, col, top) => {
+  const placeUnit = (node, col, top, nameH) => {
     const u = node._u;
     const cx = colCX(col);
     const headX = cx - u.headW / 2;
-    const headY = top + u.headNameH;
+    const headY = top + (nameH == null ? u.headNameH : nameH);
     emitCouple(out, node, headX, headY, M.headPhoto, 'head', u.headLines);
-    emitLeaves(out, node, cx, headY + M.headPhoto);
+    emitLeaves(out, node, cx, headY);
     const geo = { cx, headX, headY, right: headX + u.headW, cy: headY + M.headPhoto / 2, bottom: headY + M.headPhoto, col };
     pos.set(node, geo);
     return geo;
   };
 
-  for (const band of bands) for (const it of band.items) placeUnit(it.node, it.col, band.top);
+  for (const band of bands) for (const it of band.items) placeUnit(it.node, it.col, band.top, band.nameH);
 
-  // Root sits alone in column 0, vertically centred against every band.
-  const rootGeo = placeUnit(root, 0, (M.pad + bandsBottom) / 2 - root._u.selfH / 2);
+  // Root sits alone in column 0, level with the middle of the branches it feeds —
+  // measured portrait-centre to portrait-centre, so a single branch gives a
+  // straight line instead of a kink.
+  const heads = topBranches.map((c) => pos.get(c)).filter(Boolean);
+  const rootCY = heads.length
+    ? (Math.min(...heads.map((h) => h.cy)) + Math.max(...heads.map((h) => h.cy))) / 2
+    : (M.pad + bandsBottom) / 2 - root._u.selfH / 2 + root._u.headNameH + M.headPhoto / 2;
+  const rootGeo = placeUnit(root, 0, rootCY - M.headPhoto / 2 - root._u.headNameH);
 
   // Root → each band's first person, via one shared vertical spine.
   const spineX = M.pad + colStep - M.flowGap / 2;
-  const heads = topBranches.map((c) => pos.get(c)).filter(Boolean);
   if (heads.length) {
     out.edges.push(`M ${rootGeo.right} ${rootGeo.cy} H ${spineX}`);
     const lo = Math.min(rootGeo.cy, ...heads.map((h) => h.cy));
@@ -310,38 +332,44 @@ function measureGen(node) {
   return node;
 }
 
+/** Place a subtree with its block starting at (x, y); reports where its portrait landed. */
 function placeGen(node, x, y, out) {
   const u = node._u;
   const g = node._g;
-  const selfY = y + (g.h - u.selfH) / 2;
   const cx = x + u.unitW / 2;
   const headX = cx - u.headW / 2;
-  const headY = selfY + u.headNameH;
 
-  emitCouple(out, node, headX, headY, M.headPhoto, 'head', u.headLines);
-  emitLeaves(out, node, cx, headY + M.headPhoto);
-  if (!g.branches.length) return;
+  const draw = (headY) => {
+    emitCouple(out, node, headX, headY, M.headPhoto, 'head', u.headLines);
+    emitLeaves(out, node, cx, headY);
+    return { x: headX, right: headX + u.headW, y: headY + M.headPhoto / 2 };
+  };
 
+  if (!g.branches.length) return draw(y + (g.h - u.selfH) / 2 + u.headNameH);
+
+  // Children first: a parent is levelled against where its children actually
+  // sit, so one child always gives a straight connector.
   const colX = x + u.unitW + M.colGap;
-  const spineX = colX - M.colGap / 2;
-  const headCY = headY + M.headPhoto / 2;
   let cy = y + (g.h - g.childrenH) / 2;
   const joins = [];
-
   for (const child of g.branches) {
-    const cu = child._u;
-    const childCX = colX + cu.unitW / 2;
-    const childCY = cy + (child._g.h - cu.selfH) / 2 + cu.headNameH + M.headPhoto / 2;
-    joins.push({ x: childCX - cu.headW / 2, y: childCY });
-    placeGen(child, colX, cy, out);
+    joins.push(placeGen(child, colX, cy, out));
     cy += child._g.h + M.sibGap;
   }
 
-  out.edges.push(`M ${headX + u.headW} ${headCY} H ${spineX}`);
+  const mid = (joins[0].y + joins[joins.length - 1].y) / 2;
+  const minCY = y + u.headNameH + M.headPhoto / 2; // names above must stay inside the box
+  const maxCY = y + g.h - u.leafBlockH - M.headPhoto / 2; // as must any leaf children below
+  const headCY = Math.max(minCY, Math.min(maxCY, mid));
+  const self = draw(headCY - M.headPhoto / 2);
+
+  const spineX = colX - M.colGap / 2;
+  out.edges.push(`M ${self.right} ${headCY} H ${spineX}`);
   const lo = Math.min(headCY, ...joins.map((j) => j.y));
   const hi = Math.max(headCY, ...joins.map((j) => j.y));
   if (hi - lo > 0.5) out.edges.push(`M ${spineX} ${lo} V ${hi}`);
   for (const j of joins) out.edges.push(`M ${spineX} ${j.y} H ${j.x}`);
+  return self;
 }
 
 /* ---------------------------------------------------------------- public */

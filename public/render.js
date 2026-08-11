@@ -76,12 +76,17 @@ export function renderSVG(tree, opts = {}) {
     serif: !!t.serif,
     upper: t.nameUpper,
   });
-  const g = gutters(t);
+  const g = gutters(t, tree);
   // The title block reads tree.logo straight off the object, so resolve it here too.
   const titled = tree.logo ? { ...tree, logo: src(tree.logo) } : tree;
 
-  const width = Math.round(L.width + g.left);
-  const height = Math.round(L.height + g.top);
+  // A small family shouldn't produce a cropped-looking sheet: the canvas never
+  // goes below a poster-ish minimum, and the tree is centred in whatever room is
+  // left once the title has taken its gutter.
+  const width = Math.max(Math.round(L.width + g.left), g.left + g.minTree.w);
+  const height = Math.max(Math.round(L.height + g.top), g.top + g.minTree.h);
+  const offX = g.left + (width - g.left - L.width) / 2;
+  const offY = g.top + (height - g.top - L.height) / 2;
 
   const body = [];
 
@@ -99,9 +104,9 @@ export function renderSVG(tree, opts = {}) {
     height,
     svg: `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
 <defs>${watermarkDefs(t)}</defs>
-${backdrop(t, width, height)}
+${backdrop(t, width, height, { x: g.left, y: g.top, w: width - g.left, h: height - g.top })}
 ${titleBlock(t, titled, width, height)}
-<g transform="translate(${g.left}, ${g.top})">
+<g transform="translate(${r2(offX)}, ${r2(offY)})">
 ${body.join('\n')}
 </g>
 </svg>`,

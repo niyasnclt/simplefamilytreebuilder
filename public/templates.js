@@ -1,6 +1,8 @@
 // Six visual templates. `heritage` is a close match for the reference PDF;
 // the rest are variations on the same layout engine.
 
+import { approxWidth } from './text.js';
+
 const SANS = "'Helvetica Neue', Helvetica, Arial, sans-serif";
 const SERIF = "Georgia, 'Iowan Old Style', 'Times New Roman', serif";
 
@@ -144,13 +146,18 @@ export const TEMPLATES = [
 
 export const byId = (id) => TEMPLATES.find((t) => t.id === id) || TEMPLATES[0];
 
-/** Extra canvas room the title treatment needs. */
-export function gutters(t) {
-  if (t.title === 'side') return { left: 210, top: 40 };
-  if (t.title === 'top') return { left: 40, top: 150 };
-  if (t.title === 'banner') return { left: 40, top: 130 };
-  if (t.title === 'topleft') return { left: 40, top: 118 };
-  return { left: 40, top: 40 };
+/**
+ * Extra canvas room the title treatment needs, plus the smallest tree area that
+ * still looks like a finished sheet rather than a crop. A two-person family gets
+ * the same generous margins a twenty-person one does.
+ */
+export function gutters(t, tree = {}) {
+  if (t.title === 'side') return { left: 210, top: 40, minTree: { w: 470, h: 470 } };
+  // A centred title with a logo above it needs the extra height reserved too.
+  if (t.title === 'top') return { left: 40, top: tree.logo ? 232 : 150, minTree: { w: 560, h: 380 } };
+  if (t.title === 'banner') return { left: 40, top: 130, minTree: { w: 560, h: 380 } };
+  if (t.title === 'topleft') return { left: 40, top: 118, minTree: { w: 520, h: 380 } };
+  return { left: 40, top: 40, minTree: { w: 480, h: 380 } };
 }
 
 const esc = (s) =>
@@ -201,15 +208,24 @@ export function watermarkDefs(t) {
   }
 }
 
-export function backdrop(t, w, h) {
+/**
+ * Paper, pattern and ornament. `area` is the part of the sheet the tree itself
+ * occupies — the ornament is composed against that, not against the title gutter.
+ */
+export function backdrop(t, w, h, area = { x: 0, y: 0, w, h }) {
   let s = `<rect width="${w}" height="${h}" fill="${t.bg}"/>`;
   if (t.watermark === 'glow') {
     s += `<rect width="${w}" height="${h}" fill="url(#wm-a)"/><rect width="${w}" height="${h}" fill="url(#wm-b)"/>`;
   } else if (t.watermark !== 'none') {
     s += `<rect width="${w}" height="${h}" fill="url(#wm)"/>`;
     if (t.watermark === 'leaves') {
-      // Big faint tree silhouette, echoing the reference artwork.
-      s += `<g opacity="0.06" fill="${t.accent}" transform="translate(${w * 0.34}, ${h * 0.12}) scale(${Math.max(w, h) / 900})">
+      // Big faint tree silhouette, echoing the reference artwork. It is drawn in
+      // a ~600x740 box and scaled to sit whole on the sheet — a cropped half-tree
+      // is what makes a small sheet look unfinished.
+      const s0 = Math.min(area.w / 720, area.h / 800, 1.7);
+      const ox = area.x + area.w / 2 - 300 * s0;
+      const oy = area.y + area.h / 2 - 400 * s0;
+      s += `<g opacity="0.06" fill="${t.accent}" transform="translate(${r1(ox)}, ${r1(oy)}) scale(${r1(s0 * 100) / 100})">
         <path d="M300 720 L300 300 M300 430 C220 400 170 330 165 250 M300 430 C380 400 430 330 435 250 M300 330 C245 305 210 255 205 200 M300 330 C355 305 390 255 395 200"
           stroke="${t.accent}" stroke-width="16" fill="none" stroke-linecap="round"/>
         ${Array.from({ length: 26 }, (_, i) => {
@@ -230,6 +246,42 @@ export function backdrop(t, w, h) {
 
 /* ----------------------------------------------------------------- title */
 
+/** Split into exactly `k` lines, keeping them roughly the same length. */
+function wrapBalanced(text, k) {
+  const words = String(text || '').split(/\s+/).filter(Boolean);
+  if (words.length <= 1 || k <= 1) return [words.join(' ')];
+  const target = Math.ceil(words.join(' ').length / k);
+  const lines = [];
+  let cur = '';
+  for (const word of words) {
+    if (!cur) cur = word;
+    else if (cur.length + 1 + word.length <= target && lines.length < k - 1) cur += ' ' + word;
+    else if (lines.length === k - 1) cur += ' ' + word;
+    else { lines.push(cur); cur = word; }
+  }
+  lines.push(cur);
+  return lines;
+}
+
+/**
+ * Set a title as large as it can be without running past `budget`, trying one
+ * line then two. Tracking is a fraction of the size, so it scales with the type.
+ * `maxByLines[i]` caps the size at i+1 lines, which is what keeps a wrapped
+ * title inside the room the layout reserved for it.
+ */
+function fitTitle(name, budget, serif, trackRatio, maxByLines) {
+  const width1 = (line) => approxWidth(line, 1, trackRatio, serif) || 1;
+  let best = null;
+  for (let k = 1; k <= maxByLines.length; k++) {
+    const lines = wrapBalanced(name, k);
+    if (lines.length < k) break; // no more words to split on
+    const size = Math.min(maxByLines[k - 1], ...lines.map((l) => budget / width1(l)));
+    if (!best || size > best.size + 0.5) best = { lines, size };
+  }
+  best = best || { lines: [''], size: maxByLines[0] };
+  return { lines: best.lines, size: Math.max(11, best.size), tracking: Math.max(11, best.size) * trackRatio };
+}
+
 export function titleBlock(t, tree, w, h) {
   const name = (tree.name || '').toUpperCase();
   const sub = tree.subtitle || '';
@@ -240,60 +292,85 @@ export function titleBlock(t, tree, w, h) {
     : '';
 
   if (t.title === 'side') {
-    const lines = wrap(name, 26).slice(0, 2);
-    const size = lines.length > 1 ? 26 : 30;
-    const barH = Math.max(360, h - 200);
-    const barY = (h - barH) / 2 + 40;
+    // The pill runs the height of the sheet, and the type is set to the pill —
+    // so a two-person tree gets the same treatment as a two-hundred-person one.
+    const barTop = logo ? 132 : 40;
+    const barH = Math.max(180, h - barTop - 40);
+    const fit = fitTitle(name, barH - 72, t.serif, 0.28, [30, 26]);
+    // Rotated, the lines stack across the pill: cap height falls one side of the
+    // first baseline and the last line's depth the other. Centre on that span.
+    const above = fit.size * 0.72;
+    const below = sub
+      ? fit.lines.length * (fit.size * 1.4) + 9
+      : (fit.lines.length - 1) * (fit.size * 1.4) + fit.size * 0.25;
+    const originX = 100 - (below - above) / 2;
     return `
-      ${logo ? `<g transform="translate(90, 78)">${logo}</g>` : ''}
+      ${logo ? `<g transform="translate(100, 78)">${logo}</g>` : ''}
       <g>
-        <rect x="34" y="${barY}" width="132" height="${barH}" rx="66" fill="none" stroke="${t.ink}" stroke-width="1.6" opacity="0.85"/>
-        <g transform="translate(${100 - (lines.length - 1) * (size * 0.7)}, ${barY + barH / 2}) rotate(-90)">
-          ${lines
+        <rect x="34" y="${barTop}" width="132" height="${barH}" rx="66" fill="none" stroke="${t.ink}" stroke-width="1.6" opacity="0.85"/>
+        <g transform="translate(${r1(originX)}, ${barTop + barH / 2}) rotate(-90)">
+          ${fit.lines
             .map(
               (l, i) =>
-                `<text x="0" y="${i * (size * 1.4)}" text-anchor="middle" font-family="${t.font}" font-size="${size}" font-weight="700" letter-spacing="${size * 0.28}" fill="${t.ink}">${esc(l)}</text>`
+                `<text x="0" y="${i * (fit.size * 1.4)}" text-anchor="middle" font-family="${t.font}" font-size="${r1(fit.size)}" font-weight="700" letter-spacing="${r1(fit.tracking)}" fill="${t.ink}">${esc(l)}</text>`
             )
             .join('')}
-          ${sub ? `<text x="0" y="${lines.length * (size * 1.4) + 6}" text-anchor="middle" font-family="${t.font}" font-size="13" letter-spacing="3" fill="${t.note}">${esc(sub)}</text>` : ''}
+          ${sub ? `<text x="0" y="${r1(fit.lines.length * (fit.size * 1.4) + 6)}" text-anchor="middle" font-family="${t.font}" font-size="13" letter-spacing="3" fill="${t.note}">${esc(sub)}</text>` : ''}
         </g>
       </g>`;
   }
 
   if (t.title === 'top') {
     const cx = w / 2;
+    const fit = fitTitle(name, w - 96, t.serif, 0.176, [34, 26]);
+    const top = logo ? 96 : 44;
+    const baseline = (i) => top + fit.size + i * fit.size * 1.28;
+    const ruleY = baseline(fit.lines.length - 1) + 18;
+    const rule = Math.min(200, Math.max(110, w / 2 - 40));
     return `
       ${logo ? `<g transform="translate(${cx}, 52)">${logo}</g>` : ''}
-      <text x="${cx}" y="${logo ? 122 : 76}" text-anchor="middle" font-family="${t.font}" font-size="34" font-weight="700" letter-spacing="6" fill="${t.ink}">${esc(name)}</text>
-      <line x1="${cx - 200}" y1="${logo ? 140 : 94}" x2="${cx + 200}" y2="${logo ? 140 : 94}" stroke="${t.accent}" stroke-width="1.2"/>
-      ${sub ? `<text x="${cx}" y="${logo ? 164 : 118}" text-anchor="middle" font-family="${t.font}" font-size="14" letter-spacing="3.5" fill="${t.note}">${esc(sub)}</text>` : ''}`;
+      ${fit.lines
+        .map(
+          (l, i) =>
+            `<text x="${cx}" y="${r1(baseline(i))}" text-anchor="middle" font-family="${t.font}" font-size="${r1(fit.size)}" font-weight="700" letter-spacing="${r1(fit.tracking)}" fill="${t.ink}">${esc(l)}</text>`
+        )
+        .join('')}
+      <line x1="${r1(cx - rule)}" y1="${r1(ruleY)}" x2="${r1(cx + rule)}" y2="${r1(ruleY)}" stroke="${t.accent}" stroke-width="1.2"/>
+      ${sub ? `<text x="${cx}" y="${r1(ruleY + 24)}" text-anchor="middle" font-family="${t.font}" font-size="14" letter-spacing="3.5" fill="${t.note}">${esc(sub)}</text>` : ''}`;
   }
 
   if (t.title === 'banner') {
+    const x = logo ? 132 : 56;
+    const fit = fitTitle(name, w - x - 48, t.serif, 0.143, [28, 21]);
+    const two = fit.lines.length > 1;
+    const bandH = two ? 116 : 96;
+    const first = two ? 42 : sub ? 46 : 56;
     return `
-      <rect x="0" y="0" width="${w}" height="96" fill="${t.accent}" opacity="0.10"/>
-      ${logo ? `<g transform="translate(78, 48)">${logo}</g>` : ''}
-      <text x="${logo ? 132 : 56}" y="${sub ? 46 : 56}" font-family="${t.font}" font-size="28" font-weight="700" letter-spacing="4" fill="${t.ink}">${esc(name)}</text>
-      ${sub ? `<text x="${logo ? 132 : 56}" y="72" font-family="${t.font}" font-size="14" letter-spacing="3" fill="${t.note}">${esc(sub)}</text>` : ''}`;
+      <rect x="0" y="0" width="${w}" height="${bandH}" fill="${t.accent}" opacity="0.10"/>
+      ${logo ? `<g transform="translate(78, ${bandH / 2})">${logo}</g>` : ''}
+      ${fit.lines
+        .map(
+          (l, i) =>
+            `<text x="${x}" y="${r1(first + i * fit.size * 1.28)}" font-family="${t.font}" font-size="${r1(fit.size)}" font-weight="700" letter-spacing="${r1(fit.tracking)}" fill="${t.ink}">${esc(l)}</text>`
+        )
+        .join('')}
+      ${sub ? `<text x="${x}" y="${r1(first + fit.lines.length * fit.size * 1.28 + 6)}" font-family="${t.font}" font-size="14" letter-spacing="3" fill="${t.note}">${esc(sub)}</text>` : ''}`;
   }
 
   // topleft
+  const x = logo ? 140 : 56;
+  const fit = fitTitle(name, w - x - 48, t.serif, 0.115, [26, 20]);
+  const first = fit.lines.length > 1 ? 44 : sub ? 52 : 62;
   return `
     ${logo ? `<g transform="translate(90, 56)">${logo}</g>` : ''}
-    <text x="${logo ? 140 : 56}" y="${sub ? 52 : 62}" font-family="${t.font}" font-size="26" font-weight="700" letter-spacing="3" fill="${t.ink}">${esc(name)}</text>
-    ${sub ? `<text x="${logo ? 140 : 56}" y="78" font-family="${t.font}" font-size="13" letter-spacing="2.5" fill="${t.note}">${esc(sub)}</text>` : ''}`;
+    ${fit.lines
+      .map(
+        (l, i) =>
+          `<text x="${x}" y="${r1(first + i * fit.size * 1.28)}" font-family="${t.font}" font-size="${r1(fit.size)}" font-weight="700" letter-spacing="${r1(fit.tracking)}" fill="${t.ink}">${esc(l)}</text>`
+      )
+      .join('')}
+    ${sub ? `<text x="${x}" y="${r1(first + fit.lines.length * fit.size * 1.28 + 8)}" font-family="${t.font}" font-size="13" letter-spacing="2.5" fill="${t.note}">${esc(sub)}</text>` : ''}`;
 }
 
-/** Greedy word wrap by character budget. */
-export function wrap(text, maxChars) {
-  const words = String(text || '').split(/\s+/).filter(Boolean);
-  const lines = [];
-  let cur = '';
-  for (const w of words) {
-    if (!cur) cur = w;
-    else if ((cur + ' ' + w).length <= maxChars) cur += ' ' + w;
-    else { lines.push(cur); cur = w; }
-  }
-  if (cur) lines.push(cur);
-  return lines.length ? lines : [''];
-}
+const r1 = (n) => Math.round(n * 10) / 10;
+
