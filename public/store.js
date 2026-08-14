@@ -63,7 +63,7 @@ function randomId() {
 }
 
 function blankPerson() {
-  return { id: uid(), name: 'New Person', note: '', photo: null, spouse: null, children: [] };
+  return { id: uid(), name: 'New Person', note: '', born: '', photo: null, spouse: null, children: [] };
 }
 
 function newTree(partial = {}) {
@@ -75,6 +75,8 @@ function newTree(partial = {}) {
     template: partial.template || 'heritage',
     layout: partial.layout || 'flow',
     maxCols: partial.maxCols || 6,
+    order: partial.order || 'manual', // 'manual' | 'elder' | 'younger' — see order.js
+
     logo: partial.logo || null,
     createdAt: now,
     updatedAt: now,

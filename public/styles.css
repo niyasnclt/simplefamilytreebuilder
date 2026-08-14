@@ -144,6 +144,13 @@ textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, m
   font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--text-mute);
 }
 
+.head-tools { display: flex; align-items: center; gap: 4px; }
+.pill {
+  margin-left: 6px; padding: 1px 6px; border-radius: 10px;
+  background: var(--bg); border: 1px solid var(--line-2); color: var(--text-dim);
+  font-size: 10px; text-transform: none; letter-spacing: 0;
+}
+
 /* outline */
 .outline { flex: 1; overflow: auto; padding: 8px 6px 40px; }
 .o-row {
@@ -157,6 +164,13 @@ textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, m
 .o-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .o-name .sp { color: var(--text-mute); }
 .o-name em { color: var(--text-mute); font-style: normal; font-size: 11px; }
+.o-name .yr { color: var(--text-mute); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+/* drag to reorder — the drop line shows where the branch will land */
+.o-row.dragging { opacity: .4; }
+.o-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.o-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.o-row.drop-inside { box-shadow: inset 0 0 0 1.5px var(--accent); background: #22314a; }
 .o-tools { display: none; gap: 2px; }
 .o-row:hover .o-tools, .o-row.sel .o-tools { display: flex; }
 .o-tools button {

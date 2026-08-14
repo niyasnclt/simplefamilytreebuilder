@@ -1,31 +1,48 @@
 // Shared (server + browser) parser for indented text outlines.
 //
-//   MUHAMMED SHAH (Late) + KADEESHABI (Late)
-//     SULEIKHA + ALAVI (Late)
+//   MUHAMMED SHAH (Late) [1921] + KADEESHABI (Late) [1926]
+//     SULEIKHA [1948] + ALAVI (Late)
 //       SALEEM + SAMEENA
 //         SAGIL RAHMAN + SHERIN
 //
 // Indentation = generation. " + " separates a person from their spouse.
-// A trailing "(...)" is kept as a note, e.g. "(Late)".
+// A trailing "(...)" is kept as a note, e.g. "(Late)", and a trailing "[...]" as a
+// birth year — that's what an "eldest first" branch order sorts on.
 
 export function uid() {
   return 'p' + Math.random().toString(36).slice(2, 10);
 }
 
-function splitNote(raw) {
-  const s = raw.trim();
-  const m = s.match(/^(.*?)\s*\(([^()]*)\)\s*$/);
-  if (m) return { name: m[1].trim(), note: m[2].trim() };
-  return { name: s, note: '' };
+/** Peel a trailing "(note)" and "[born]" off a name, in either order. */
+function splitLabel(raw) {
+  let s = raw.trim();
+  let note = '';
+  let born = '';
+  for (let i = 0; i < 2; i++) {
+    const b = !born && s.match(/^(.*?)\s*\[([^[\]]*)\]$/);
+    if (b) { born = b[2].trim(); s = b[1].trim(); continue; }
+    const n = !note && s.match(/^(.*?)\s*\(([^()]*)\)$/);
+    if (n) { note = n[2].trim(); s = n[1].trim(); continue; }
+    break;
+  }
+  return { name: s, note, born };
 }
 
 function makePerson(chunk) {
   const parts = chunk.split(/\s+\+\s+/);
-  const self = splitNote(parts[0] || '');
-  const person = { id: uid(), name: self.name, note: self.note, photo: null, spouse: null, children: [] };
+  const self = splitLabel(parts[0] || '');
+  const person = {
+    id: uid(),
+    name: self.name,
+    note: self.note,
+    born: self.born,
+    photo: null,
+    spouse: null,
+    children: [],
+  };
   if (parts[1]) {
-    const sp = splitNote(parts[1]);
-    person.spouse = { name: sp.name, note: sp.note, photo: null };
+    const sp = splitLabel(parts[1]);
+    person.spouse = { name: sp.name, note: sp.note, born: sp.born, photo: null };
   }
   return person;
 }
@@ -69,7 +86,7 @@ export function parseOutline(text) {
 /** Render a person tree back out as an indented outline (round-trips parseOutline). */
 export function toOutline(root) {
   const out = [];
-  const label = (p) => (p.note ? `${p.name} (${p.note})` : p.name);
+  const label = (p) => p.name + (p.note ? ` (${p.note})` : '') + (p.born ? ` [${p.born}]` : '');
   const walk = (p, depth) => {
     let line = label(p);
     if (p.spouse && p.spouse.name) line += ' + ' + label(p.spouse);

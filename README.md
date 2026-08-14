@@ -58,18 +58,19 @@ cache cleanups from evicting your data.
 and type the family as indented text:
 
 ```
-ARTHUR HOLLOWAY (Late) + ELEANOR HOLLOWAY (Late)
-  JAMES HOLLOWAY + MARGARET REID
-    DANIEL HOLLOWAY + SOPHIE LANG
-      OLIVER HOLLOWAY
-      AMELIA HOLLOWAY
-  ROSE HOLLOWAY + HENRY CARTER
-    GEORGE CARTER
+ARTHUR HOLLOWAY (Late) [1918] + ELEANOR HOLLOWAY (Late) [1921]
+  JAMES HOLLOWAY [1944] + MARGARET REID [1947]
+    DANIEL HOLLOWAY [1971] + SOPHIE LANG [1973]
+      OLIVER HOLLOWAY [1999]
+      AMELIA HOLLOWAY [2002]
+  ROSE HOLLOWAY [1948] + HENRY CARTER [1945]
+    GEORGE CARTER [1979]
 ```
 
 - **Indent** one level per generation
 - **` + `** adds a spouse
 - **`(…)`** after a name becomes a small note, e.g. `(Late)`
+- **`[…]`** after a name is a birth year, e.g. `[1948]` — used to order branches by age
 
 Get the whole structure in first, then add photos by clicking each portrait. The
 **Outline** button reopens this view at any time; re-applying it keeps photos attached to
@@ -79,6 +80,28 @@ anyone whose name still matches.
 someone. The right panel edits their name, note, photo, spouse and children.
 `Enter` adds a child, `Tab` adds a sibling, `⌘S` forces a save. Everything autosaves
 about a second after you stop typing.
+
+## Ordering branches
+
+Siblings are drawn in the order they appear in the left-hand list — top of the list is
+the first branch on the sheet. There are two ways to set that order.
+
+**By age.** Give people a birth year in the **Born** field on the right (a bare year like
+`1948` is enough; `1948-03-12` sorts more precisely). Then **Structure → Order** and pick
+**Eldest first** or **Youngest first**: every group of siblings, at every level, is
+sorted by birth year and stays sorted as you edit. Anyone with no year yet holds their
+current place, after the dated siblings — a blank year never shuffles a branch to the top.
+
+**By hand.** With **Manual** order, drag any row in the structure list:
+
+- drop on the **upper or lower edge** of a row to sit before or after it
+- drop in the **middle** of a row to move in under it as a child
+
+`↑` and `↓` on a row (or in the right-hand panel) nudge one step. Moving anyone by hand
+switches the tree back to Manual, so a by-hand arrangement is never overwritten.
+
+Selecting a parent with more than one child also gives an **Order these children** pair
+of buttons, for sorting one group by age without committing the whole tree to it.
 
 **The sample tree.** A first visit is seeded with the Holloway family so there's
 something to look at — generic names and generated placeholder portraits, not real
@@ -142,6 +165,7 @@ public/              this folder is the entire deployable site
   text.js            measured per-character font widths, shared by layout and render
   exporter.js        SVG → canvas → PNG, and a small built-in PDF writer
   outline.js         indented-text ↔ tree parser
+  order.js           birth-year parsing and sibling ordering (eldest / youngest first)
   sw.js              service worker; caches the shell so the app runs offline
 ```
 

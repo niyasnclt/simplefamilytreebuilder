@@ -2,6 +2,7 @@ import { renderSVG, fitRect, normalizeFit, isDefaultFit, DEFAULT_FIT, MAX_ZOOM }
 import { TEMPLATES, byId } from './templates.js';
 import { exportPNG, exportPDF, forgetPhotoCache, download, slug } from './exporter.js';
 import { parseOutline, toOutline, uid } from './outline.js';
+import { isAuto, sortBranch, sortChildren, countUndated, personBirth, ORDER_LABEL } from './order.js';
 import * as store from './store.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -149,6 +150,9 @@ async function openTree(id) {
   state.selected = { id: state.tree.root.id, side: 'self' };
   state.collapsed = new Set();
   state.dirty = false;
+  // A tree saved with an automatic order may have been edited elsewhere (outline paste,
+  // JSON import) — settle it before the first draw so the list and the sheet agree.
+  if (sortBranch(state.tree.root, state.tree.order)) markDirty();
   forgetPhotoCache();
   $('#library').hidden = true;
   $('#editor').hidden = false;
@@ -225,7 +229,7 @@ function walk(node, fn, parent = null, index = 0) {
 const find = (id) => walk(state.tree.root, (n, p, i) => (n.id === id ? { node: n, parent: p, index: i } : null));
 
 function newPerson(name = '') {
-  return { id: uid(), name, note: '', photo: null, spouse: null, children: [] };
+  return { id: uid(), name, note: '', born: '', photo: null, spouse: null, children: [] };
 }
 
 function addChild(id) {
@@ -265,13 +269,67 @@ function movePerson(id, dir) {
   if (to < 0 || to >= hit.parent.children.length) return;
   const [n] = hit.parent.children.splice(hit.index, 1);
   hit.parent.children.splice(to, 0, n);
+  dropAutoOrder('Arranged by hand — branch order is now manual');
+  changed();
+}
+
+/* ------------------------------------------------------------ branch order */
+
+/**
+ * Move a branch somewhere else: before or after another person, or in as their
+ * last child. Used by the structure list's drag and drop.
+ */
+function moveNode(srcId, dstId, where) {
+  if (srcId === dstId) return;
+  const src = find(srcId);
+  if (!src) return;
+  if (!src.parent) return toast('The root person can’t be moved', 'err');
+  if (contains(src.node, dstId)) return toast('A branch can’t be moved inside itself', 'err');
+
+  src.parent.children.splice(src.index, 1);
+  const dst = find(dstId);
+  if (!dst) {
+    src.parent.children.splice(src.index, 0, src.node); // target vanished — put it back
+    return;
+  }
+
+  if (where === 'inside' || !dst.parent) {
+    // Dropping onto the root means "become its child" — there is no before or after it.
+    (dst.node.children ||= []).push(src.node);
+    state.collapsed.delete(dst.node.id);
+  } else {
+    dst.parent.children.splice(dst.index + (where === 'after' ? 1 : 0), 0, src.node);
+  }
+
+  state.selected = { id: srcId, side: 'self' };
+  dropAutoOrder('Arranged by hand — branch order is now manual');
+  changed();
+}
+
+const contains = (node, id) => !!walk(node, (n) => (n.id === id ? n : null));
+
+/** Hand control back to manual ordering after a by-hand move. */
+function dropAutoOrder(message) {
+  if (!isAuto(state.tree.order)) return;
+  state.tree.order = 'manual';
+  toast(message);
+}
+
+/** Re-apply the tree's automatic order, if it has one. Returns true if anyone moved. */
+function reflowOrder() {
+  return sortBranch(state.tree.root, state.tree.order);
+}
+
+function setTreeOrder(order) {
+  state.tree.order = order;
+  reflowOrder();
   changed();
 }
 
 function setSpouse(id, on) {
   const hit = find(id);
   if (!hit) return;
-  hit.node.spouse = on ? { name: '', note: '', photo: null } : null;
+  hit.node.spouse = on ? { name: '', note: '', born: '', photo: null } : null;
   if (!on && state.selected?.side === 'spouse') state.selected = { id, side: 'self' };
   changed();
 }
@@ -294,6 +352,19 @@ function focusName() {
 function renderOutline() {
   const box = $('#outline');
   box.replaceChildren(outlineNode(state.tree.root, true));
+  $('#order-state').textContent = ORDER_LABEL[state.tree.order] || ORDER_LABEL.manual;
+}
+
+// The row a drag started on. dataTransfer can't be read during dragover, so the
+// source is tracked here instead.
+let dragId = null;
+
+/** Which third of a row the pointer is over: drop before it, after it, or into it. */
+function dropZone(e, row, isRoot) {
+  if (isRoot) return 'inside';
+  const box = row.getBoundingClientRect();
+  const at = (e.clientY - box.top) / box.height;
+  return at < 0.32 ? 'before' : at > 0.68 ? 'after' : 'inside';
 }
 
 function outlineNode(p, isRoot) {
@@ -317,12 +388,15 @@ function outlineNode(p, isRoot) {
   const nameHtml =
     escapeHtml(p.name || 'Unnamed') +
     (p.note ? ` <em>(${escapeHtml(p.note)})</em>` : '') +
-    (p.spouse && p.spouse.name ? ` <span class="sp">+ ${escapeHtml(p.spouse.name)}</span>` : '');
+    (p.spouse && p.spouse.name ? ` <span class="sp">+ ${escapeHtml(p.spouse.name)}</span>` : '') +
+    (p.born ? ` <span class="yr">${escapeHtml(p.born)}</span>` : '');
 
   const row = el(
     'div',
     {
       class: 'o-row' + (selected ? ' sel' : ''),
+      draggable: isRoot ? null : 'true',
+      title: isRoot ? null : 'Drag to move this branch',
       onclick: () => { state.selected = { id: p.id, side: 'self' }; renderAll(); },
     },
     twist,
@@ -336,6 +410,36 @@ function outlineNode(p, isRoot) {
       isRoot ? null : btn('✕', 'Delete', () => removePerson(p.id))
     )
   );
+
+  const clearDrop = () => row.classList.remove('drop-before', 'drop-after', 'drop-inside');
+
+  if (!isRoot) {
+    row.addEventListener('dragstart', (e) => {
+      dragId = p.id;
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', p.id); // Firefox won't start a drag without payload
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => { dragId = null; row.classList.remove('dragging'); });
+  }
+
+  row.addEventListener('dragover', (e) => {
+    if (!dragId || dragId === p.id || contains(find(dragId)?.node, p.id)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const zone = dropZone(e, row, isRoot);
+    clearDrop();
+    row.classList.add('drop-' + zone);
+  });
+  // Crossing into the row's own children fires dragleave too; ignore those.
+  row.addEventListener('dragleave', (e) => { if (!row.contains(e.relatedTarget)) clearDrop(); });
+  row.addEventListener('drop', (e) => {
+    e.preventDefault();
+    clearDrop();
+    const src = dragId || e.dataTransfer.getData('text/plain');
+    dragId = null;
+    if (src) moveNode(src, p.id, dropZone(e, row, isRoot));
+  });
 
   const wrapNode = el('div', {}, row);
   if (kids.length) {
@@ -410,6 +514,7 @@ function renderInspector() {
       'Person',
       textField('Name', p.name, (v) => { p.name = v; markDirty(); renderOutline(); renderStage(); }, 'insp-name'),
       textField('Note (shown in brackets)', p.note, (v) => { p.note = v; markDirty(); renderOutline(); renderStage(); }, null, 'e.g. Late'),
+      bornField(p),
       photoField(p, () => { markDirty(); renderStage(); renderInspector(); })
     )
   );
@@ -420,12 +525,33 @@ function renderInspector() {
         'Spouse',
         textField('Name', p.spouse.name, (v) => { p.spouse.name = v; markDirty(); renderOutline(); renderStage(); }),
         textField('Note', p.spouse.note, (v) => { p.spouse.note = v; markDirty(); renderStage(); }, null, 'e.g. Late'),
+        bornField(p.spouse),
         photoField(p.spouse, () => { markDirty(); renderStage(); renderInspector(); }),
         el('button', { class: 'btn tiny ghost danger', onclick: () => setSpouse(p.id, false) }, 'Remove spouse')
       )
     );
   } else {
     parts.push(el('button', { class: 'btn ghost', onclick: () => setSpouse(p.id, true) }, '+ Add spouse'));
+  }
+
+  const kids = p.children || [];
+  if (kids.length > 1) {
+    const undated = kids.filter((k) => personBirth(k) == null).length;
+    parts.push(
+      section(
+        'Order these children',
+        el(
+          'div',
+          { class: 'insp-actions' },
+          el('button', { class: 'btn', onclick: () => sortHere(p, 'elder') }, '↑ Eldest first'),
+          el('button', { class: 'btn', onclick: () => sortHere(p, 'younger') }, '↓ Youngest first')
+        ),
+        el('p', { class: 'muted', style: 'margin:0;font-size:12px;line-height:1.5' },
+          undated
+            ? `${undated} of ${kids.length} have no birth year — they hold their current place, after the dated ones.`
+            : 'All dated, so this group sorts exactly.')
+      )
+    );
   }
 
   parts.push(
@@ -469,6 +595,34 @@ function textField(label, value, onInput, id, placeholder) {
   const input = el('input', { value: value || '', placeholder: placeholder || '', id: id || false });
   input.addEventListener('input', () => onInput(input.value));
   return el('label', { class: 'field' }, el('span', {}, label), input);
+}
+
+/**
+ * Birth year for a person or a spouse — what an "eldest first" order sorts on.
+ * Re-sorting waits for `change` (blur or Enter): re-ordering on every keystroke would
+ * shuffle the list out from under the cursor the moment you typed "1".
+ */
+function bornField(owner) {
+  const input = el('input', { value: owner.born || '', placeholder: 'e.g. 1948 or 1948-03-12' });
+  input.addEventListener('input', () => { owner.born = input.value; markDirty(); renderOutline(); });
+  input.addEventListener('change', () => {
+    if (reflowOrder()) markDirty();
+    renderAll();
+  });
+  return el('label', { class: 'field' }, el('span', {}, 'Born (year or date)'), input);
+}
+
+/** Sort one person's children, without committing the whole tree to that order. */
+function sortHere(node, order) {
+  const moved = sortChildren(node, order);
+  const switched = isAuto(state.tree.order) && state.tree.order !== order;
+  if (switched) state.tree.order = 'manual';
+  changed();
+  toast(
+    moved
+      ? `${(node.name || 'This branch')} — ${order === 'elder' ? 'eldest' : 'youngest'} first`
+      : 'Already in that order'
+  );
 }
 
 /**
@@ -715,7 +869,7 @@ function newTreeModal(withOutline) {
   const sub = el('input', { placeholder: 'Subtitle (optional)' });
   const area = el('textarea', {
     rows: 12,
-    placeholder: `MUHAMMED SHAH (Late) + KADEESHABI (Late)\n  SULEIKHA + ALAVI (Late)\n    SALEEM + SAMEENA\n      SAGIL RAHMAN + SHERIN\n      SALIH RAHMAN\n  ABU (Late) + NARGIS`,
+    placeholder: `MUHAMMED SHAH (Late) [1921] + KADEESHABI (Late)\n  SULEIKHA [1948] + ALAVI (Late)\n    SALEEM + SAMEENA\n      SAGIL RAHMAN + SHERIN\n      SALIH RAHMAN\n  ABU (Late) [1951] + NARGIS`,
   });
 
   const m = modal({
@@ -728,7 +882,7 @@ function newTreeModal(withOutline) {
         ? el(
             'label',
             { class: 'field' },
-            el('span', {}, 'Outline — indent for each generation, use “ + ” for a spouse, “(…)” for a note'),
+            el('span', {}, 'Outline — indent for each generation, “ + ” for a spouse, “(…)” for a note, “[…]” for a birth year'),
             area
           )
         : null,
@@ -761,24 +915,68 @@ function newTreeModal(withOutline) {
 
 /* -------------------------------------------------------------- design */
 
+/** A row of single-choice chips that repaints itself after every pick. */
+function chipRow(opts, get, set) {
+  const row = el('div', { class: 'opt-row' });
+  const paint = () =>
+    row.replaceChildren(
+      ...opts.map(([v, label, title]) =>
+        el(
+          'button',
+          { class: 'chip' + (get() === v ? ' sel' : ''), title: title || false, onclick: () => { set(v); paint(); } },
+          label
+        )
+      )
+    );
+  paint();
+  return row;
+}
+
+/* --------------------------------------------------------- branch order UI */
+
+function orderModal() {
+  const t = state.tree;
+  const hint = el('p', { class: 'muted' }, '');
+
+  const paintHint = () => {
+    if (!isAuto(t.order)) {
+      hint.textContent =
+        'Drag any row in the structure list to move a branch — drop on the upper or lower edge of a row to sit before or after it, drop in the middle to move in under it. ↑ and ↓ nudge one step.';
+      return;
+    }
+    const undated = countUndated(t.root);
+    hint.textContent = undated
+      ? `${undated} ${undated === 1 ? 'person has' : 'people have'} no birth year yet — they hold their current place, after the dated ones in each group. Fill in “Born” on the right to place them.`
+      : 'Everyone has a birth year, so every branch is sorted exactly. New people join the end until you give them a year.';
+  };
+
+  const chips = chipRow(
+    [
+      ['manual', 'Manual', 'Arrange branches yourself by dragging, or with ↑ ↓.'],
+      ['elder', 'Eldest first', 'Every group of siblings is sorted by birth year, oldest at the top.'],
+      ['younger', 'Youngest first', 'Every group of siblings is sorted by birth year, youngest at the top.'],
+    ],
+    () => t.order || 'manual',
+    (v) => { setTreeOrder(v); paintHint(); }
+  );
+  paintHint();
+
+  const m = modal({
+    title: 'Branch order',
+    body: [
+      el('label', { class: 'field' }, el('span', {}, 'Order siblings by'), chips),
+      hint,
+      el('p', {}, 'An automatic order re-sorts every level of the tree, and keeps itself up to date as you edit birth years. Moving someone by hand switches back to Manual.'),
+    ],
+    foot: [el('button', { class: 'btn primary', onclick: () => m.close() }, 'Done')],
+  });
+}
+
 function designModal() {
   const t = state.tree;
 
-  const chips = (opts, get, set) => {
-    const row = el('div', { class: 'opt-row' });
-    const paint = () =>
-      row.replaceChildren(
-        ...opts.map(([v, label, title]) =>
-          el(
-            'button',
-            { class: 'chip' + (get() === v ? ' sel' : ''), title: title || false, onclick: () => { set(v); paint(); markDirty(); renderStage(); } },
-            label
-          )
-        )
-      );
-    paint();
-    return row;
-  };
+  const chips = (opts, get, set) =>
+    chipRow(opts, get, (v) => { set(v); markDirty(); renderStage(); });
 
   const logoImg = el('img', { class: 'photo-thumb', src: t.logo ? store.photoURL(t.logo) : transparentPixel(), alt: '' });
   const logoFile = el('input', { type: 'file', accept: 'image/*', style: 'display:none' });
@@ -835,7 +1033,7 @@ function outlineModal() {
     wide: true,
     title: 'Edit as outline',
     body: [
-      el('p', {}, 'Indent one level per generation. Use “ + ” for a spouse and “(…)” for a note, e.g. “ALAVI (Late)”. Applying replaces the structure; photos are carried over wherever a name still matches.'),
+      el('p', {}, 'Indent one level per generation. Use “ + ” for a spouse, “(…)” for a note and “[…]” for a birth year — e.g. “ALAVI (Late) [1946]”. Applying replaces the structure; photos are carried over wherever a name still matches.'),
       area,
     ],
     foot: [
@@ -850,6 +1048,7 @@ function outlineModal() {
     if (!root) return toast('Outline is empty', 'err');
     carryPhotos(state.tree.root, root);
     state.tree.root = root;
+    reflowOrder(); // a pasted outline is in whatever order it was typed
     state.selected = { id: root.id, side: 'self' };
     state.collapsed = new Set();
     m.close();
@@ -1036,6 +1235,7 @@ function importJSONFlow() {
       template: data.template,
       layout: data.layout,
       maxCols: data.maxCols,
+      order: data.order,
       logo: data.logo,
       root: data.root,
     });
@@ -1060,6 +1260,7 @@ function boot() {
   $('#lib-search').addEventListener('input', (e) => { state.query = e.target.value; renderLibrary(); });
 
   $('#btn-back').onclick = closeEditor;
+  $('#btn-order').onclick = orderModal;
   $('#btn-design').onclick = designModal;
   $('#btn-outline').onclick = outlineModal;
   $('#btn-export').onclick = exportModal;

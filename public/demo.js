@@ -9,21 +9,22 @@
 import { parseOutline } from './outline.js';
 import { createTree, adoptPhotos } from './store.js';
 
+// Birth years are filled in so "Branch order → eldest first" has something to sort on.
 const OUTLINE = `
-ARTHUR HOLLOWAY (Late) + ELEANOR HOLLOWAY (Late)
-  JAMES HOLLOWAY + MARGARET REID
-    DANIEL HOLLOWAY + SOPHIE LANG
-      OLIVER HOLLOWAY
-      AMELIA HOLLOWAY
-    CLARA HOLLOWAY + THOMAS BYRNE
-      NOAH BYRNE
-  ROSE HOLLOWAY + HENRY CARTER
-    LUCY CARTER + SAM OKONKWO
-      MAYA OKONKWO
-      ETHAN OKONKWO
-    GEORGE CARTER
-  WILLIAM HOLLOWAY (Late) + BEATRICE HOLLOWAY
-    ALICE HOLLOWAY
+ARTHUR HOLLOWAY (Late) [1918] + ELEANOR HOLLOWAY (Late) [1921]
+  JAMES HOLLOWAY [1944] + MARGARET REID [1947]
+    DANIEL HOLLOWAY [1971] + SOPHIE LANG [1973]
+      OLIVER HOLLOWAY [1999]
+      AMELIA HOLLOWAY [2002]
+    CLARA HOLLOWAY [1975] + THOMAS BYRNE [1972]
+      NOAH BYRNE [2004]
+  ROSE HOLLOWAY [1948] + HENRY CARTER [1945]
+    LUCY CARTER [1976] + SAM OKONKWO [1974]
+      MAYA OKONKWO [2003]
+      ETHAN OKONKWO [2006]
+    GEORGE CARTER [1979]
+  WILLIAM HOLLOWAY (Late) [1952] + BEATRICE HOLLOWAY [1955]
+    ALICE HOLLOWAY [1983]
 `;
 
 /* ------------------------------------------------------ dummy portraits */
@@ -118,6 +119,7 @@ export async function createDemoTree() {
     template: 'heritage',
     layout: 'flow',
     maxCols: 6,
+    order: 'elder',
     root,
   });
 }

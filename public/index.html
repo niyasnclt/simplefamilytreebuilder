@@ -59,7 +59,12 @@
     <aside class="panel left">
       <div class="panel-head">
         <span>Structure</span>
-        <button id="btn-collapse-all" class="btn tiny ghost" title="Collapse / expand all">⇕</button>
+        <div class="head-tools">
+          <button id="btn-order" class="btn tiny ghost" title="Order branches by age, or arrange them by hand">
+            Order<span id="order-state" class="pill"></span>
+          </button>
+          <button id="btn-collapse-all" class="btn tiny ghost" title="Collapse / expand all">⇕</button>
+        </div>
       </div>
       <div id="outline" class="outline"></div>
     </aside>
