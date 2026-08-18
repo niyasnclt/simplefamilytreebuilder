@@ -68,7 +68,8 @@ ARTHUR HOLLOWAY (Late) [1918] + ELEANOR HOLLOWAY (Late) [1921]
 ```
 
 - **Indent** one level per generation
-- **` + `** adds a spouse
+- **` + `** adds a spouse — repeat it for more than one, e.g. `ABDUL + FATIMA + RUQIYA`
+- **` & `** at the end of a child's line names their other parent, e.g. `OLIVER [1999] & FATIMA`
 - **`(…)`** after a name becomes a small note, e.g. `(Late)`
 - **`[…]`** after a name is a birth year, e.g. `[1948]` — used to order branches by age
 
@@ -77,9 +78,34 @@ Get the whole structure in first, then add photos by clicking each portrait. The
 anyone whose name still matches.
 
 **Editing directly.** Click a portrait on the canvas or a row in the left list to select
-someone. The right panel edits their name, note, photo, spouse and children.
+someone. The right panel edits their name, note, photo, spouses and children. **+ Add
+spouse** can be used more than once; the arrows beside each spouse set the order they
+appear in.
+
+**Children of a particular marriage.** Once someone has two or more spouses, the
+structure list splits their children into a group per marriage, each with its own **＋**.
+The **+ Child** button inside a Spouse section adds against that marriage; the plain
+**+ Child** under Family adds a child not tied to one. To move a child between marriages,
+select them and use **Child of → Which marriage**, or drag their row onto another
+marriage's heading. Removing a spouse leaves their children in place, untied.
 `Enter` adds a child, `Tab` adds a sibling, `⌘S` forces a save. Everything autosaves
 about a second after you stop typing.
+
+## Framing a photo
+
+Portraits are drawn in a circle (or a rounded square, depending on the template), so a
+photo has to be cropped to fit. **Adjust framing** under any photo opens a preview of
+exactly what will print — drag to move it, scroll or use the slider to zoom.
+
+At 100% the photo is scaled to just cover the frame, which is the tightest crop that
+leaves no gaps. Zooming in past that crops harder; **zooming out below 100% pulls the
+photo away from the edges**, and the gap prints as plain paper in the template's colour.
+That's the way to keep a wide group shot or a full-length portrait whole instead of
+cutting it down to a head.
+
+**Whole photo** jumps straight to the point where nothing is cropped at all — 67% for a
+3:2 photo, less for a panorama. The slider bottoms out at 25%. Panning is only offered
+while there's something hidden to slide into view; once the photo fits, it stays centred.
 
 ## Ordering branches
 
@@ -111,7 +137,9 @@ people. Delete it whenever you like; it won't come back.
 
 Generations run left to right:
 
-- A person and their spouse are drawn as a pair of portraits.
+- A person and their spouses are drawn as a row of portraits, joined by a marriage line.
+- With several marriages, each one's children hang in their own block below, connected
+  back to that marriage's line.
 - Children who have descendants of their own **continue to the right**.
 - Children who don't **hang in a row below** their parents.
 

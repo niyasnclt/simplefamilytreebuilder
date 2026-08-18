@@ -8,6 +8,7 @@
 
 import { parseOutline } from './outline.js';
 import { createTree, adoptPhotos } from './store.js';
+import { spousesOf } from './people.js';
 
 // Birth years are filled in so "Branch order → eldest first" has something to sort on.
 const OUTLINE = `
@@ -98,7 +99,7 @@ function attachPortraits(root) {
   const walk = (p) => {
     if (!p) return;
     give(p);
-    if (p.spouse) give(p.spouse);
+    spousesOf(p).forEach(give);
     (p.children || []).forEach(walk);
   };
   walk(root);

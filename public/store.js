@@ -8,6 +8,7 @@
  */
 
 import { uid } from './outline.js';
+import { spousesOf } from './people.js';
 
 const DB_NAME = 'familytree';
 const DB_VERSION = 1;
@@ -63,7 +64,7 @@ function randomId() {
 }
 
 function blankPerson() {
-  return { id: uid(), name: 'New Person', note: '', born: '', photo: null, spouse: null, children: [] };
+  return { id: uid(), name: 'New Person', note: '', born: '', photo: null, spouse: null, spouses: [], children: [] };
 }
 
 function newTree(partial = {}) {
@@ -86,7 +87,7 @@ function newTree(partial = {}) {
 
 function countPeople(p) {
   if (!p) return 0;
-  let n = 1 + (p.spouse && p.spouse.name ? 1 : 0);
+  let n = 1 + spousesOf(p).filter((s) => s.name).length;
   for (const c of p.children || []) n += countPeople(c);
   return n;
 }
@@ -94,7 +95,8 @@ function countPeople(p) {
 function firstPhoto(p) {
   if (!p) return null;
   if (p.photo) return p.photo;
-  if (p.spouse && p.spouse.photo) return p.spouse.photo;
+  const spousePhoto = spousesOf(p).find((s) => s.photo);
+  if (spousePhoto) return spousePhoto.photo;
   for (const c of p.children || []) {
     const found = firstPhoto(c);
     if (found) return found;
@@ -109,7 +111,7 @@ export function collectPhotoRefs(tree, into = new Set()) {
   const walk = (p) => {
     if (!p) return;
     if (p.photo) into.add(p.photo);
-    if (p.spouse && p.spouse.photo) into.add(p.spouse.photo);
+    for (const s of spousesOf(p)) if (s.photo) into.add(s.photo);
     (p.children || []).forEach(walk);
   };
   walk(tree.root);

@@ -13,9 +13,14 @@ const r2 = (n) => Math.round(n * 100) / 100;
  * How a photo sits inside its frame: `zoom` 1 is the tightest crop that still
  * covers it, and `x`/`y` slide the overflow — 0 is left/top, 1 is right/bottom.
  * The default is a centred cover, which is what the app did before framing existed.
+ *
+ * Below 1 the photo no longer reaches the edges: it shrinks inside the frame and
+ * the gap is filled with the template's matte, which is how you keep a wide group
+ * shot or a full-length portrait whole instead of cropping it to a head.
  */
 export const DEFAULT_FIT = { zoom: 1, x: 0.5, y: 0.5 };
 export const MAX_ZOOM = 4;
+export const MIN_ZOOM = 0.25;
 
 const clamp = (v, lo, hi, fallback) =>
   Number.isFinite(+v) ? Math.min(hi, Math.max(lo, +v)) : fallback;
@@ -23,11 +28,25 @@ const clamp = (v, lo, hi, fallback) =>
 export function normalizeFit(fit) {
   if (!fit) return DEFAULT_FIT;
   return {
-    zoom: clamp(fit.zoom, 1, MAX_ZOOM, 1),
+    zoom: clamp(fit.zoom, MIN_ZOOM, MAX_ZOOM, 1),
     x: clamp(fit.x, 0, 1, 0.5),
     y: clamp(fit.y, 0, 1, 0.5),
   };
 }
+
+/**
+ * The zoom at which every pixel of the photo is inside the frame — the point
+ * where cropping stops. It's the aspect ratio, because zoom 1 already scales the
+ * short side to the frame, so the long side has to come down by exactly that much.
+ * Square photos are already whole at 1; unmeasured ones can only be guessed at.
+ */
+export function containZoom(natural) {
+  if (!natural || !(natural.w > 0) || !(natural.h > 0)) return 1;
+  return Math.max(MIN_ZOOM, Math.min(natural.w, natural.h) / Math.max(natural.w, natural.h));
+}
+
+/** The paper behind a portrait: shows through wherever a zoomed-out photo doesn't reach. */
+export const photoMatte = (t) => (t.id === 'midnight' ? '#232C3C' : '#D9D5CC');
 
 export const isDefaultFit = (fit) => {
   const f = normalizeFit(fit);
@@ -40,6 +59,10 @@ export const isDefaultFit = (fit) => {
  * Shared with the framing dialog so its preview and the exported SVG agree. When the
  * natural size is unknown the browser's own centred cover stands in; zoom still works,
  * but panning has nothing to slide because the box stays square.
+ *
+ * An axis only honours `x`/`y` while it overflows. Once it fits inside the frame there
+ * is nothing to slide, and centring it keeps a photo zoomed out below 1 from inheriting
+ * whatever offset was set while it was still cropped.
  */
 export function fitRect(fit, size, natural) {
   const f = normalizeFit(fit);
@@ -48,8 +71,8 @@ export function fitRect(fit, size, natural) {
   const w = known ? natural.w * scale : size * f.zoom;
   const h = known ? natural.h * scale : size * f.zoom;
   return {
-    x: -(w - size) * f.x,
-    y: -(h - size) * f.y,
+    x: w > size ? -(w - size) * f.x : (size - w) / 2,
+    y: h > size ? -(h - size) * f.y : (size - h) / 2,
     w,
     h,
     // w/h already carry the aspect ratio, so 'none' scales without distorting.
@@ -132,6 +155,13 @@ function nodeMarkup(n, t, src, opts) {
   if (n.photo) {
     const box = fitRect(n.photoFit, d, opts.photoSize ? opts.photoSize(n.photo) : null);
     const href = esc(src(n.photo));
+    // Zoomed out past a full cover, so lay the matte down first — otherwise the
+    // backdrop and its watermark would read straight through the gap.
+    if (box.w < d - 0.5 || box.h < d - 0.5) {
+      out.push(
+        `<rect x="${n.x}" y="${n.y}" width="${d}" height="${d}" fill="${photoMatte(t)}" clip-path="url(#${cid})"/>`
+      );
+    }
     out.push(
       `<image href="${href}" xlink:href="${href}" x="${r2(n.x + box.x)}" y="${r2(n.y + box.y)}" width="${r2(box.w)}" height="${r2(box.h)}" preserveAspectRatio="${box.preserveAspectRatio}" clip-path="url(#${cid})"/>`
     );
@@ -167,10 +197,9 @@ function nodeMarkup(n, t, src, opts) {
 function placeholder(n, t, cid) {
   const d = n.d;
   const cx = n.x + d / 2;
-  const soft = t.id === 'midnight' ? '#232C3C' : '#D9D5CC';
   const figure = t.id === 'midnight' ? '#3C4859' : '#B9B3A6';
   return `<g clip-path="url(#${cid})">
-    <rect x="${n.x}" y="${n.y}" width="${d}" height="${d}" fill="${soft}"/>
+    <rect x="${n.x}" y="${n.y}" width="${d}" height="${d}" fill="${photoMatte(t)}"/>
     <circle cx="${cx}" cy="${n.y + d * 0.36}" r="${d * 0.17}" fill="${figure}"/>
     <path d="M ${cx - d * 0.32} ${n.y + d} a ${d * 0.32} ${d * 0.3} 0 0 1 ${d * 0.64} 0 Z" fill="${figure}"/>
   </g>`;

@@ -10,13 +10,15 @@
 //   'generations' One column per generation, strictly. Siblings stack vertically.
 //                 Taller, but every column is exactly one generation deep.
 //
-// In both, a couple is drawn as a pair of portraits, and children with no
-// descendants of their own hang in a row directly below their parents.
+// In both, a person is drawn beside their spouses — one portrait each, joined
+// left to right by a marriage bar — and children with no descendants of their
+// own hang in a row directly below.
 //
 // Name text is wrapped here (not in the renderer) so the space reserved for a
 // name and the space it actually occupies are always the same.
 
 import { wrapToWidth, approxWidth, LINE_H } from './text.js';
+import { drawnSpouses, groupChildren } from './people.js';
 
 export const M = {
   headPhoto: 78,
@@ -33,15 +35,22 @@ export const M = {
   leafDrop: 66, // head portrait bottom → leaf portrait top
   leafRowGap: 26,
   laneDrop: 20, // head portrait bottom → sibling connector lane
+  laneStep: 16, // between the lanes of one person's separate marriages
   maxLeafPerRow: 4,
   pad: 64,
 };
 
 export const hasKids = (p) => !!(p && p.children && p.children.length);
-const hasSpouse = (p) => !!(p && p.spouse && (p.spouse.name || p.spouse.photo));
+const spousesFor = (p) => (p ? drawnSpouses(p) : []);
+const hasSpouse = (p) => spousesFor(p).length > 0;
 const branchesOf = (p) => (p.children || []).filter(hasKids);
 const leavesOf = (p) => (p.children || []).filter((k) => !hasKids(k));
-const coupleWidth = (p, d) => (hasSpouse(p) ? d * 2 + M.coupleGap : d);
+
+/** Width of a person plus every spouse standing beside them. */
+function coupleWidth(p, d) {
+  const n = spousesFor(p).length;
+  return d * (n + 1) + M.coupleGap * n;
+}
 
 function chunk(arr, size) {
   const out = [];
@@ -82,45 +91,79 @@ function nameLines(person, d, fs, cfg) {
   const budget = nameBudget(person, d);
   return {
     self: labelFor(person.name, person.note, budget, fs, cfg),
-    spouse: hasSpouse(person) ? labelFor(person.spouse.name, person.spouse.note, budget, fs, cfg) : null,
+    spouses: spousesFor(person).map(({ spouse, index }) => ({
+      index,
+      spouse,
+      label: labelFor(spouse.name, spouse.note, budget, fs, cfg),
+    })),
   };
 }
 
-const lineCount = (l) => Math.max(l.self.rows, l.spouse ? l.spouse.rows : 0);
+// Everyone in a row shares one name block, so it's as tall as the longest name in it.
+const lineCount = (l) => Math.max(l.self.rows, ...l.spouses.map((s) => s.label.rows));
 
 /* --------------------------------------------------- per-person metrics */
 
-/** Size of one person's own card: the couple portraits plus any leaf-child rows. */
+/** Size of one person's own card: the portrait row plus any leaf-child blocks. */
 function unitMetrics(node, cfg) {
   const headW = coupleWidth(node, M.headPhoto);
   const headLines = nameLines(node, M.headPhoto, M.headFS, cfg);
   const headNameH = lineCount(headLines) * LINE_H + M.headNameGap;
 
-  const rows = chunk(leavesOf(node), M.maxLeafPerRow).map((row) => {
-    const items = row.map((p) => ({
-      person: p,
-      w: coupleWidth(p, M.leafPhoto),
-      lines: nameLines(p, M.leafPhoto, M.leafFS, cfg),
-    }));
+  const measure = (children, pos) => {
+    const rows = chunk(children, M.maxLeafPerRow).map((row) => {
+      const items = row.map((p) => ({
+        person: p,
+        w: coupleWidth(p, M.leafPhoto),
+        lines: nameLines(p, M.leafPhoto, M.leafFS, cfg),
+      }));
+      return {
+        items,
+        w: items.reduce((a, i) => a + i.w, 0) + M.leafGap * (items.length - 1),
+        nameH: items.reduce((a, i) => Math.max(a, lineCount(i.lines)), 1) * LINE_H + M.leafNameGap,
+      };
+    });
     return {
-      items,
-      w: items.reduce((a, i) => a + i.w, 0) + M.leafGap * (items.length - 1),
-      nameH: items.reduce((a, i) => Math.max(a, lineCount(i.lines)), 1) * LINE_H + M.leafNameGap,
+      pos, // which marriage this block hangs from, or null for children with none set
+      rows,
+      w: rows.reduce((a, r) => Math.max(a, r.w), 0),
+      h: rows.reduce((a, r) => a + M.leafPhoto + r.nameH, 0) + (rows.length - 1) * M.leafRowGap,
     };
-  });
+  };
 
-  const leafBlockH = rows.length
-    ? M.leafDrop +
-      rows.reduce((a, r) => a + M.leafPhoto + r.nameH, 0) +
-      (rows.length - 1) * M.leafRowGap
+  // One block per marriage, side by side in the order the spouses stand in.
+  // Below two marriages there's nothing to tell apart, so the children stay in a
+  // single block and the drawing is exactly what it was before any of this.
+  const leaves = leavesOf(node);
+  const split =
+    spousesFor(node).length > 1
+      ? groupChildren(node, leaves)
+      : { groups: [], loose: leaves };
+  const blocks = [
+    ...split.groups.map((g) => ({ children: g.children, pos: g.pos })),
+    { children: split.loose, pos: null },
+  ]
+    .filter((b) => b.children.length)
+    .map((b) => measure(b.children, b.pos));
+
+  // Each block reaches its children along a lane of its own, so several marriages
+  // need the children pushed far enough down to stack those lanes without merging.
+  const dropH =
+    blocks.length > 1
+      ? Math.max(M.leafDrop, (M.laneDrop + (blocks.length - 1) * M.laneStep + 12) * 2)
+      : M.leafDrop;
+
+  const leafBlockH = blocks.length ? dropH + Math.max(...blocks.map((b) => b.h)) : 0;
+  const leafBlockW = blocks.length
+    ? blocks.reduce((a, b) => a + b.w, 0) + (blocks.length - 1) * M.sibGap
     : 0;
-  const leafBlockW = rows.reduce((a, r) => Math.max(a, r.w), 0);
 
   return {
     headW,
     headLines,
     headNameH,
-    rows,
+    blocks,
+    dropH,
     leafBlockH,
     leafBlockW,
     unitW: Math.max(headW, leafBlockW),
@@ -138,69 +181,104 @@ function annotate(node, cfg) {
 
 function emitCouple(out, person, x, y, d, kind, lines) {
   const below = kind === 'leaf';
-  out.nodes.push({
-    key: person.id,
-    ref: { id: person.id, side: 'self' },
-    name: person.name,
-    note: person.note,
-    photo: person.photo,
-    photoFit: person.photoFit,
-    lines: lines.self.lines,
-    noteInline: lines.self.noteInline,
-    rows: lines.self.rows,
-    fs: lines.self.fs,
-    x, y, d, kind, nameBelow: below,
-  });
-  if (hasSpouse(person)) {
-    const sx = x + d + M.coupleGap;
+  const put = (px, key, side, who, label) =>
     out.nodes.push({
-      key: person.id + ':spouse',
-      ref: { id: person.id, side: 'spouse' },
-      name: person.spouse.name,
-      note: person.spouse.note,
-      photo: person.spouse.photo,
-      photoFit: person.spouse.photoFit,
-      lines: lines.spouse ? lines.spouse.lines : [''],
-      noteInline: lines.spouse ? lines.spouse.noteInline : true,
-      rows: lines.spouse ? lines.spouse.rows : 1,
-      fs: lines.spouse ? lines.spouse.fs : M.headFS,
-      x: sx, y, d, kind, nameBelow: below,
+      key,
+      ref: { id: person.id, side },
+      name: who.name,
+      note: who.note,
+      photo: who.photo,
+      photoFit: who.photoFit,
+      lines: label.lines,
+      noteInline: label.noteInline,
+      rows: label.rows,
+      fs: label.fs,
+      x: px, y, d, kind, nameBelow: below,
     });
-    out.edges.push(`M ${x + d} ${y + d / 2} H ${sx}`);
+
+  put(x, person.id, 'self', person, lines.self);
+
+  // Spouses run rightward, each joined to the portrait before it by its own bar
+  // rather than one line spanning the row — a shared bar would have to cross the
+  // portraits in between.
+  let prevRight = x + d;
+  for (const { index, spouse, label } of lines.spouses) {
+    const sx = prevRight + M.coupleGap;
+    put(sx, `${person.id}:spouse:${index}`, `spouse:${index}`, spouse, label);
+    out.edges.push(`M ${prevRight} ${y + d / 2} H ${sx}`);
+    prevRight = sx + d;
   }
 }
 
 /**
- * Draw a person's leaf children hanging in rows below their portrait.
+ * Draw a person's leaf children hanging in rows below the portrait row.
  *
- * A couple's line meets the tree at the middle of their marriage link rather
- * than at the top of a portrait — otherwise it stops in the gap between the two
- * of them and reads as unattached.
+ * Each marriage gets its own block, and the block's line comes down from the
+ * middle of that marriage's link rather than from the top of a portrait —
+ * otherwise it stops in the gap between two people and reads as unattached.
+ *
+ * A block is rarely narrow enough to sit directly under its own link, so where
+ * it can't, the line drops to a lane below the portraits and runs across, the
+ * same way branch connectors thread past the columns between them.
  */
-function emitLeaves(out, node, unitCX, headY) {
+function emitLeaves(out, node, unitCX, headX, headY) {
   const u = node._u;
-  if (!u.rows.length) return;
+  if (!u.blocks.length) return;
   const headBottom = headY + M.headPhoto;
-  let rowTop = headBottom + M.leafDrop;
-  let lastBusY = headBottom;
-  for (const row of u.rows) {
-    const busY = rowTop - M.leafDrop / 2;
-    let cx = unitCX - row.w / 2;
-    const joins = [];
-    for (const item of row.items) {
-      emitCouple(out, item.person, cx, rowTop, M.leafPhoto, 'leaf', item.lines);
-      const paired = item.w > M.leafPhoto;
-      joins.push({ x: cx + item.w / 2, y: rowTop + (paired ? M.leafPhoto / 2 : 0) });
-      cx += item.w + M.leafGap;
+  const paired = coupleWidth(node, M.headPhoto) > M.headPhoto;
+
+  // The link each block hangs from: portrait `pos + 1` is that spouse, so theirs
+  // sits in the gap before it. Children of no particular marriage hang from the
+  // middle of the whole row.
+  const anchorOf = (block) =>
+    block.pos == null
+      ? unitCX
+      : headX + block.pos * (M.headPhoto + M.coupleGap) + M.headPhoto + M.coupleGap / 2;
+
+  // Blocks run left to right in the order their links do — otherwise one block's
+  // reach can straddle another's, and the two connectors have to cross.
+  const placed = u.blocks
+    .map((block) => ({ block, anchorX: anchorOf(block) }))
+    .sort((a, b) => a.anchorX - b.anchorX);
+
+  let runX = unitCX - u.leafBlockW / 2;
+  placed.forEach((p, i) => {
+    p.blockCX = runX + p.block.w / 2;
+    p.laneY = headBottom + M.laneDrop + i * M.laneStep;
+    runX += p.block.w + M.sibGap;
+  });
+
+  for (const { block, blockCX, anchorX, laneY } of placed) {
+    let rowTop = headBottom + u.dropH;
+    let lastBusY = headBottom;
+
+    for (const row of block.rows) {
+      const busY = rowTop - u.dropH / 2;
+      let cx = blockCX - row.w / 2;
+      const joins = [];
+      for (const item of row.items) {
+        emitCouple(out, item.person, cx, rowTop, M.leafPhoto, 'leaf', item.lines);
+        const itemPaired = item.w > M.leafPhoto;
+        joins.push({ x: cx + item.w / 2, y: rowTop + (itemPaired ? M.leafPhoto / 2 : 0) });
+        cx += item.w + M.leafGap;
+      }
+      const xs = joins.map((j) => j.x);
+      out.edges.push(`M ${Math.min(blockCX, ...xs)} ${busY} H ${Math.max(blockCX, ...xs)}`);
+      for (const j of joins) out.edges.push(`M ${j.x} ${busY} V ${j.y}`);
+      lastBusY = busY;
+      rowTop += M.leafPhoto + row.nameH + M.leafRowGap;
     }
-    const xs = joins.map((j) => j.x);
-    out.edges.push(`M ${Math.min(unitCX, ...xs)} ${busY} H ${Math.max(unitCX, ...xs)}`);
-    for (const j of joins) out.edges.push(`M ${j.x} ${busY} V ${j.y}`);
-    lastBusY = busY;
-    rowTop += M.leafPhoto + row.nameH + M.leafRowGap;
+
+    const from = paired ? headY + M.headPhoto / 2 : headBottom;
+
+    if (Math.abs(anchorX - blockCX) < 0.5) {
+      out.edges.push(`M ${anchorX} ${from} V ${lastBusY}`);
+    } else {
+      out.edges.push(`M ${anchorX} ${from} V ${laneY}`);
+      out.edges.push(`M ${anchorX} ${laneY} H ${blockCX}`);
+      out.edges.push(`M ${blockCX} ${laneY} V ${lastBusY}`);
+    }
   }
-  const from = coupleWidth(node, M.headPhoto) > M.headPhoto ? headY + M.headPhoto / 2 : headBottom;
-  out.edges.push(`M ${unitCX} ${from} V ${lastBusY}`);
 }
 
 /* -------------------------------------------------------- mode: 'flow' */
@@ -256,7 +334,7 @@ function layoutFlow(root, maxCols) {
     const headX = cx - u.headW / 2;
     const headY = top + (nameH == null ? u.headNameH : nameH);
     emitCouple(out, node, headX, headY, M.headPhoto, 'head', u.headLines);
-    emitLeaves(out, node, cx, headY);
+    emitLeaves(out, node, cx, headX, headY);
     const geo = { cx, headX, headY, right: headX + u.headW, cy: headY + M.headPhoto / 2, bottom: headY + M.headPhoto, col };
     pos.set(node, geo);
     return geo;
@@ -341,7 +419,7 @@ function placeGen(node, x, y, out) {
 
   const draw = (headY) => {
     emitCouple(out, node, headX, headY, M.headPhoto, 'head', u.headLines);
-    emitLeaves(out, node, cx, headY);
+    emitLeaves(out, node, cx, headX, headY);
     return { x: headX, right: headX + u.headW, y: headY + M.headPhoto / 2 };
   };
 

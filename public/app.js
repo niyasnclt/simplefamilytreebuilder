@@ -1,8 +1,12 @@
-import { renderSVG, fitRect, normalizeFit, isDefaultFit, DEFAULT_FIT, MAX_ZOOM } from './render.js';
+import {
+  renderSVG, fitRect, normalizeFit, isDefaultFit, containZoom, photoMatte,
+  DEFAULT_FIT, MAX_ZOOM, MIN_ZOOM,
+} from './render.js';
 import { TEMPLATES, byId } from './templates.js';
 import { exportPNG, exportPDF, forgetPhotoCache, download, slug } from './exporter.js';
 import { parseOutline, toOutline, uid } from './outline.js';
 import { isAuto, sortBranch, sortChildren, countUndated, personBirth, ORDER_LABEL } from './order.js';
+import { spousesOf, drawnSpouses, groupChildren, setSpouses, blankSpouse, forgetSpouse } from './people.js';
 import * as store from './store.js';
 
 const $ = (sel) => document.querySelector(sel);
@@ -229,13 +233,15 @@ function walk(node, fn, parent = null, index = 0) {
 const find = (id) => walk(state.tree.root, (n, p, i) => (n.id === id ? { node: n, parent: p, index: i } : null));
 
 function newPerson(name = '') {
-  return { id: uid(), name, note: '', born: '', photo: null, spouse: null, children: [] };
+  return { id: uid(), name, note: '', born: '', photo: null, spouse: null, spouses: [], with: null, children: [] };
 }
 
-function addChild(id) {
+/** `withSpouse` is a spouse id, naming which marriage the child belongs to. */
+function addChild(id, withSpouse = null) {
   const hit = find(id);
   if (!hit) return;
   const kid = newPerson('');
+  kid.with = withSpouse;
   (hit.node.children ||= []).push(kid);
   state.collapsed.delete(id);
   state.selected = { id: kid.id, side: 'self' };
@@ -247,10 +253,19 @@ function addSibling(id) {
   const hit = find(id);
   if (!hit || !hit.parent) return toast('The root has no siblings — add a child instead');
   const sib = newPerson('');
+  sib.with = hit.node.with || null; // a sibling shares the marriage, unless there isn't one
   hit.parent.children.splice(hit.index + 1, 0, sib);
   state.selected = { id: sib.id, side: 'self' };
   changed();
   focusName();
+}
+
+/** Move a child to another of their parent's marriages, or to none. */
+function setChildWith(id, spouseId) {
+  const hit = find(id);
+  if (!hit) return;
+  hit.node.with = spouseId || null;
+  changed();
 }
 
 function removePerson(id) {
@@ -279,7 +294,7 @@ function movePerson(id, dir) {
  * Move a branch somewhere else: before or after another person, or in as their
  * last child. Used by the structure list's drag and drop.
  */
-function moveNode(srcId, dstId, where) {
+function moveNode(srcId, dstId, where, withSpouse) {
   if (srcId === dstId) return;
   const src = find(srcId);
   if (!src) return;
@@ -296,9 +311,12 @@ function moveNode(srcId, dstId, where) {
   if (where === 'inside' || !dst.parent) {
     // Dropping onto the root means "become its child" — there is no before or after it.
     (dst.node.children ||= []).push(src.node);
+    // Dropped on a marriage heading it joins that marriage; on the person, none.
+    src.node.with = withSpouse === undefined ? null : withSpouse;
     state.collapsed.delete(dst.node.id);
   } else {
     dst.parent.children.splice(dst.index + (where === 'after' ? 1 : 0), 0, src.node);
+    src.node.with = dst.node.with || null; // land in the same marriage as the row dropped onto
   }
 
   state.selected = { id: srcId, side: 'self' };
@@ -326,11 +344,46 @@ function setTreeOrder(order) {
   changed();
 }
 
-function setSpouse(id, on) {
+/* ---------------------------------------------------------------- spouses */
+
+/** The list to edit, always a real array even for a tree that predates `spouses`. */
+function spouseList(node) {
+  const list = spousesOf(node);
+  if (node.spouses !== list) setSpouses(node, [...list]);
+  return node.spouses;
+}
+
+function addSpouse(id) {
   const hit = find(id);
   if (!hit) return;
-  hit.node.spouse = on ? { name: '', note: '', born: '', photo: null } : null;
-  if (!on && state.selected?.side === 'spouse') state.selected = { id, side: 'self' };
+  const list = spouseList(hit.node);
+  setSpouses(hit.node, [...list, blankSpouse()]);
+  state.selected = { id, side: `spouse:${hit.node.spouses.length - 1}` };
+  changed();
+  focusSpouseName(hit.node.spouses.length - 1);
+}
+
+function removeSpouse(id, index) {
+  const hit = find(id);
+  if (!hit) return;
+  const list = spouseList(hit.node);
+  if (index < 0 || index >= list.length) return;
+  forgetSpouse(hit.node, list[index].id); // their children stay, just unattached
+  setSpouses(hit.node, list.filter((_, i) => i !== index));
+  // Selection is by index, so anything at or past the gap now points at the wrong person.
+  if (String(state.selected?.side).startsWith('spouse:')) state.selected = { id, side: 'self' };
+  changed();
+}
+
+function moveSpouse(id, index, dir) {
+  const hit = find(id);
+  if (!hit) return;
+  const list = [...spouseList(hit.node)];
+  const to = index + dir;
+  if (to < 0 || to >= list.length) return;
+  [list[index], list[to]] = [list[to], list[index]];
+  setSpouses(hit.node, list);
+  state.selected = { id, side: `spouse:${to}` };
   changed();
 }
 
@@ -343,6 +396,13 @@ function changed() {
 function focusName() {
   requestAnimationFrame(() => {
     const f = $('#insp-name');
+    if (f) { f.focus(); f.select(); }
+  });
+}
+
+function focusSpouseName(index) {
+  requestAnimationFrame(() => {
+    const f = $(`#insp-spouse-${index}`);
     if (f) { f.focus(); f.select(); }
   });
 }
@@ -372,10 +432,13 @@ function outlineNode(p, isRoot) {
   const isCollapsed = state.collapsed.has(p.id);
   const selected = state.selected && state.selected.id === p.id;
 
+  // Several marriages always get headers, so there's something to fold even with no children yet.
+  const expandable = kids.length > 0 || drawnSpouses(p).length > 1;
+
   const twist = el(
     'span',
     {
-      class: 'o-twist' + (kids.length ? '' : ' leaf'),
+      class: 'o-twist' + (expandable ? '' : ' leaf'),
       onclick: (e) => {
         e.stopPropagation();
         state.collapsed.has(p.id) ? state.collapsed.delete(p.id) : state.collapsed.add(p.id);
@@ -385,10 +448,15 @@ function outlineNode(p, isRoot) {
     isCollapsed ? '▶' : '▼'
   );
 
+  const spouseHtml = spousesOf(p)
+    .filter((s) => s.name)
+    .map((s) => ` <span class="sp">+ ${escapeHtml(s.name)}</span>`)
+    .join('');
+
   const nameHtml =
     escapeHtml(p.name || 'Unnamed') +
     (p.note ? ` <em>(${escapeHtml(p.note)})</em>` : '') +
-    (p.spouse && p.spouse.name ? ` <span class="sp">+ ${escapeHtml(p.spouse.name)}</span>` : '') +
+    spouseHtml +
     (p.born ? ` <span class="yr">${escapeHtml(p.born)}</span>` : '');
 
   const row = el(
@@ -442,12 +510,67 @@ function outlineNode(p, isRoot) {
   });
 
   const wrapNode = el('div', {}, row);
-  if (kids.length) {
-    wrapNode.append(
-      el('div', { class: 'o-kids', hidden: isCollapsed || null }, ...kids.map((k) => outlineNode(k, false)))
-    );
+  if (expandable) {
+    wrapNode.append(el('div', { class: 'o-kids', hidden: isCollapsed || null }, ...childBlocks(p, kids)));
   }
   return wrapNode;
+}
+
+/**
+ * The rows under a person. With one marriage (or none) that's just the children,
+ * as it has always been. With several, each marriage gets a header with its own
+ * add button so it's clear which one a child is being added to.
+ */
+function childBlocks(p, kids) {
+  const spouses = drawnSpouses(p);
+  if (spouses.length < 2) return kids.map((k) => outlineNode(k, false));
+
+  const { groups, loose } = groupChildren(p, kids);
+  const blocks = groups.map(({ spouse, children }) =>
+    el(
+      'div',
+      { class: 'o-group' },
+      groupHeader(p, spouse, `+ ${spouse.name || 'Unnamed'}`, spouse.id),
+      ...children.map((k) => outlineNode(k, false))
+    )
+  );
+  if (loose.length) {
+    blocks.push(
+      el(
+        'div',
+        { class: 'o-group' },
+        groupHeader(p, null, 'No marriage set', null),
+        ...loose.map((k) => outlineNode(k, false))
+      )
+    );
+  }
+  return blocks;
+}
+
+/** A marriage's heading in the structure list, and a drop target for reassigning. */
+function groupHeader(p, spouse, label, spouseId) {
+  const head = el(
+    'div',
+    { class: 'o-grouphead' + (spouse ? '' : ' loose'), title: spouse ? 'Children of this marriage' : 'Children not tied to a marriage' },
+    el('span', { class: 'o-groupname' }, label),
+    el('div', { class: 'o-tools' }, btn('＋', spouse ? `Add a child with ${spouse.name || 'this spouse'}` : 'Add a child with no marriage set', () => addChild(p.id, spouseId)))
+  );
+
+  head.addEventListener('dragover', (e) => {
+    if (!dragId || dragId === p.id) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    head.classList.add('drop-inside');
+  });
+  head.addEventListener('dragleave', () => head.classList.remove('drop-inside'));
+  head.addEventListener('drop', (e) => {
+    e.preventDefault();
+    head.classList.remove('drop-inside');
+    const src = dragId || e.dataTransfer.getData('text/plain');
+    dragId = null;
+    if (src) moveNode(src, p.id, 'inside', spouseId);
+  });
+  return head;
 }
 
 function btn(label, title, onclick) {
@@ -519,19 +642,45 @@ function renderInspector() {
     )
   );
 
-  if (p.spouse) {
-    parts.push(
-      section(
-        'Spouse',
-        textField('Name', p.spouse.name, (v) => { p.spouse.name = v; markDirty(); renderOutline(); renderStage(); }),
-        textField('Note', p.spouse.note, (v) => { p.spouse.note = v; markDirty(); renderStage(); }, null, 'e.g. Late'),
-        bornField(p.spouse),
-        photoField(p.spouse, () => { markDirty(); renderStage(); renderInspector(); }),
-        el('button', { class: 'btn tiny ghost danger', onclick: () => setSpouse(p.id, false) }, 'Remove spouse')
-      )
+  const spouses = spousesOf(p);
+  spouses.forEach((sp, i) => {
+    const repaint = () => { markDirty(); renderStage(); renderInspector(); };
+    const sec = section(
+      spouses.length > 1 ? `Spouse ${i + 1}` : 'Spouse',
+      textField('Name', sp.name, (v) => { sp.name = v; markDirty(); renderOutline(); renderStage(); }, `insp-spouse-${i}`),
+      textField('Note', sp.note, (v) => { sp.note = v; markDirty(); renderStage(); }, null, 'e.g. Late'),
+      bornField(sp),
+      photoField(sp, repaint),
+      el(
+        'div',
+        { class: 'insp-actions' },
+        el('button', { class: 'btn tiny', onclick: () => addChild(p.id, sp.id) }, '+ Child'),
+        spouses.length > 1 ? el('button', { class: 'btn tiny ghost', title: 'Move left', onclick: () => moveSpouse(p.id, i, -1) }, '←') : null,
+        spouses.length > 1 ? el('button', { class: 'btn tiny ghost', title: 'Move right', onclick: () => moveSpouse(p.id, i, 1) }, '→') : null,
+        el('button', { class: 'btn tiny ghost danger', onclick: () => removeSpouse(p.id, i) }, 'Remove')
+      ),
+      childTally(p, sp)
     );
-  } else {
-    parts.push(el('button', { class: 'btn ghost', onclick: () => setSpouse(p.id, true) }, '+ Add spouse'));
+    // Clicking a portrait picks one spouse out of several — say which.
+    if (state.selected?.side === `spouse:${i}`) sec.classList.add('sel');
+    parts.push(sec);
+  });
+
+  parts.push(
+    el('button', { class: 'btn ghost', onclick: () => addSpouse(p.id) }, spouses.length ? '+ Add another spouse' : '+ Add spouse')
+  );
+
+  // Which of the parent's marriages this person belongs to — only a question
+  // once the parent has more than one.
+  const parentSpouses = hit.parent ? drawnSpouses(hit.parent) : [];
+  if (parentSpouses.length > 1) {
+    const select = el('select', {});
+    for (const { spouse } of parentSpouses) {
+      select.append(el('option', { value: spouse.id, selected: p.with === spouse.id || null }, `${hit.parent.name || 'Parent'} + ${spouse.name || 'Unnamed'}`));
+    }
+    select.append(el('option', { value: '', selected: !parentSpouses.some(({ spouse }) => spouse.id === p.with) || null }, 'Not set'));
+    select.addEventListener('change', () => setChildWith(p.id, select.value));
+    parts.push(section('Child of', el('label', { class: 'field' }, el('span', {}, 'Which marriage'), select)));
   }
 
   const kids = p.children || [];
@@ -560,15 +709,18 @@ function renderInspector() {
       el(
         'div',
         { class: 'insp-actions' },
-        el('button', { class: 'btn', onclick: () => addChild(p.id) }, '+ Child'),
+        el('button', { class: 'btn', onclick: () => addChild(p.id) }, spouses.length > 1 ? '+ Child (no marriage)' : '+ Child'),
         isRoot ? null : el('button', { class: 'btn', onclick: () => addSibling(p.id) }, '+ Sibling'),
         isRoot ? null : el('button', { class: 'btn ghost', onclick: () => movePerson(p.id, -1) }, '↑'),
         isRoot ? null : el('button', { class: 'btn ghost', onclick: () => movePerson(p.id, 1) }, '↓'),
         isRoot ? null : el('button', { class: 'btn ghost danger', onclick: () => confirmDelete(p) }, 'Delete')
       ),
-      el('p', { class: 'muted', style: 'margin:0;font-size:12px;line-height:1.5' },
-        `${(p.children || []).length} child${(p.children || []).length === 1 ? '' : 'ren'}` +
-          (isRoot ? ' · this is the root of the tree' : ''))
+      hint(
+        `${kids.length} child${kids.length === 1 ? '' : 'ren'}` +
+          (spouses.length > 1 ? ` · ${childSplit(p)}` : '') +
+          (isRoot ? ' · this is the root of the tree' : '')
+      ),
+      spouses.length > 1 ? hint('Use + Child in a Spouse section above to add against that marriage.') : null
     )
   );
 
@@ -589,6 +741,25 @@ function countDescendants(p) {
 
 function section(title, ...kids) {
   return el('div', { class: 'insp-sec' }, el('h4', {}, title), ...kids.filter(Boolean));
+}
+
+const hint = (text) => el('p', { class: 'muted', style: 'margin:0;font-size:12px;line-height:1.5' }, text);
+
+/** "2 with FATIMA, 1 with RUQIYA, 1 unset" — the breakdown across a person's marriages. */
+function childSplit(p) {
+  const { groups, loose } = groupChildren(p, p.children || []);
+  const bits = groups
+    .filter((g) => g.children.length)
+    .map((g) => `${g.children.length} with ${g.spouse.name || 'Unnamed'}`);
+  if (loose.length) bits.push(`${loose.length} unset`);
+  return bits.length ? bits.join(', ') : 'none set against a marriage';
+}
+
+/** How many children sit under one marriage. Only meaningful once there are several. */
+function childTally(p, sp) {
+  if (drawnSpouses(p).length < 2) return null;
+  const n = (p.children || []).filter((c) => c.with === sp.id).length;
+  return hint(n ? `${n} child${n === 1 ? '' : 'ren'} with ${sp.name || 'this spouse'}` : 'No children set against this marriage yet');
 }
 
 function textField(label, value, onInput, id, placeholder) {
@@ -679,7 +850,10 @@ function thumb(owner) {
   const box = fitRect(owner.photoFit, size, store.photoSize(owner.photo));
   return el(
     'div',
-    { class: 'photo-thumb photo-frame' + (portraitShape() === 'squircle' ? ' sq' : '') },
+    {
+      class: 'photo-thumb photo-frame' + (portraitShape() === 'squircle' ? ' sq' : ''),
+      style: `background:${photoMatte(byId(state.tree ? state.tree.template : ''))}`,
+    },
     el('img', {
       src: store.photoURL(owner.photo),
       alt: '',
@@ -752,9 +926,14 @@ async function framePhotoModal(ref, current) {
   let natural = store.photoSize(ref);
 
   const img = el('img', { src: store.photoURL(ref), alt: '', draggable: 'false' });
-  const frame = el('div', { class: 'frame-box' + (portraitShape() === 'squircle' ? ' sq' : '') }, img);
-  const zoom = el('input', { type: 'range', min: '1', max: String(MAX_ZOOM), step: '0.01', value: String(fit.zoom) });
+  const frame = el('div', {
+    class: 'frame-box' + (portraitShape() === 'squircle' ? ' sq' : ''),
+    // The matte is what prints behind a zoomed-out photo, so preview it, not the UI grey.
+    style: `background:${photoMatte(byId(state.tree ? state.tree.template : ''))}`,
+  }, img);
+  const zoom = el('input', { type: 'range', min: String(MIN_ZOOM), max: String(MAX_ZOOM), step: '0.01', value: String(fit.zoom) });
   const zoomOut = el('span', { class: 'frame-zoom-val' });
+  const whole = el('button', { class: 'btn tiny ghost', onclick: () => setZoom(containZoom(natural)) }, 'Whole photo');
 
   // A photo that failed to measure earlier still decodes here, so take the size from
   // the element and hand it back to the store — the stage render needs it too.
@@ -775,6 +954,8 @@ async function framePhotoModal(ref, current) {
     zoom.value = String(fit.zoom);
     zoomOut.textContent = Math.round(fit.zoom * 100) + '%';
     frame.classList.toggle('locked', !panRoom().x && !panRoom().y);
+    // Nothing to reveal once the whole picture is already in the frame.
+    whole.disabled = !natural || fit.zoom <= containZoom(natural) + 0.001;
   }
 
   /** How many pixels of overflow there are to slide in each axis. */
@@ -784,7 +965,7 @@ async function framePhotoModal(ref, current) {
   }
 
   const clamp01 = (v) => Math.min(1, Math.max(0, v));
-  const setZoom = (z) => { fit.zoom = Math.min(MAX_ZOOM, Math.max(1, z)); paint(); };
+  const setZoom = (z) => { fit.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z)); paint(); };
 
   frame.addEventListener('pointerdown', (e) => {
     const room = panRoom();
@@ -822,7 +1003,8 @@ async function framePhotoModal(ref, current) {
       body: [
         el('div', { class: 'frame-wrap' }, frame),
         el('label', { class: 'frame-zoom' }, el('span', {}, 'Zoom'), zoom, zoomOut),
-        el('p', { class: 'muted frame-hint' }, 'Drag the photo to move it, scroll or use the slider to zoom. Only the part inside the ring is printed.'),
+        el('div', { class: 'frame-fit' }, whole),
+        el('p', { class: 'muted frame-hint' }, 'Drag the photo to move it, scroll or use the slider to zoom. Only the part inside the ring is printed — below 100% the photo pulls away from the edges and the gap prints as plain paper.'),
       ],
       foot: [
         el('button', {
@@ -882,7 +1064,7 @@ function newTreeModal(withOutline) {
         ? el(
             'label',
             { class: 'field' },
-            el('span', {}, 'Outline — indent for each generation, “ + ” for a spouse, “(…)” for a note, “[…]” for a birth year'),
+            el('span', {}, 'Outline — indent for each generation, “ + ” for each spouse, “ & ” to name a child’s other parent, “(…)” for a note, “[…]” for a birth year'),
             area
           )
         : null,
@@ -1033,7 +1215,7 @@ function outlineModal() {
     wide: true,
     title: 'Edit as outline',
     body: [
-      el('p', {}, 'Indent one level per generation. Use “ + ” for a spouse, “(…)” for a note and “[…]” for a birth year — e.g. “ALAVI (Late) [1946]”. Applying replaces the structure; photos are carried over wherever a name still matches.'),
+      el('p', {}, 'Indent one level per generation. Use “ + ” for a spouse — repeat it for more than one — plus “(…)” for a note and “[…]” for a birth year, e.g. “ALAVI (Late) [1946] + AMINA + ZAINAB”. Where a parent has more than one spouse, end a child’s line with “ & ” and the other parent’s name to say which marriage they belong to. Applying replaces the structure; photos are carried over wherever a name still matches.'),
       area,
     ],
     foot: [
@@ -1064,14 +1246,14 @@ function carryPhotos(oldRoot, newRoot) {
   const collect = (p) => {
     if (!p) return;
     if (p.photo && !photos.has(key(p.name))) photos.set(key(p.name), p.photo);
-    if (p.spouse && p.spouse.photo && !photos.has(key(p.spouse.name))) photos.set(key(p.spouse.name), p.spouse.photo);
+    for (const s of spousesOf(p)) if (s.photo && !photos.has(key(s.name))) photos.set(key(s.name), s.photo);
     (p.children || []).forEach(collect);
   };
   collect(oldRoot);
   const apply = (p) => {
     if (!p) return;
     if (!p.photo && photos.has(key(p.name))) p.photo = photos.get(key(p.name));
-    if (p.spouse && !p.spouse.photo && photos.has(key(p.spouse.name))) p.spouse.photo = photos.get(key(p.spouse.name));
+    for (const s of spousesOf(p)) if (!s.photo && photos.has(key(s.name))) s.photo = photos.get(key(s.name));
     (p.children || []).forEach(apply);
   };
   apply(newRoot);
@@ -1118,6 +1300,11 @@ function exportModal() {
     status.textContent = `Output: ${w} × ${h} px${format === 'pdf' && page === 'fit' ? ' (page sized to the tree)' : ''}`;
   }
 
+  // Some browsers — notably the in-app ones in Instagram and Facebook — quietly
+  // ignore a download, so always leave the finished file reachable by hand.
+  const fallback = el('p', { class: 'tiny' }, '');
+  fallback.hidden = true;
+
   const go = el('button', { class: 'btn primary', onclick: run }, 'Export');
   const m = modal({
     title: 'Export',
@@ -1126,6 +1313,7 @@ function exportModal() {
       el('label', { class: 'field' }, el('span', {}, 'Resolution'), qty.row),
       pageField,
       status,
+      fallback,
     ],
     foot: [el('button', { class: 'btn ghost', onclick: () => m.close() }, 'Cancel'), go],
   });
@@ -1133,6 +1321,7 @@ function exportModal() {
 
   async function run() {
     go.disabled = true;
+    fallback.hidden = true;
     const onProgress = (msg) => (status.textContent = msg);
     try {
       await flushSave();
@@ -1140,8 +1329,18 @@ function exportModal() {
         format === 'png'
           ? await exportPNG(state.tree, { scale, onProgress })
           : await exportPDF(state.tree, { scale, page, onProgress });
-      m.close();
-      toast(res.clamped ? 'Exported (scaled down to fit the browser’s canvas limit)' : 'Export ready');
+
+      status.textContent = res.clamped
+        ? 'Exported at a lower resolution — the full size is more than this browser can render.'
+        : 'Export ready.';
+      fallback.replaceChildren(
+        'Nothing downloaded? ',
+        el('a', { href: res.url, download: res.filename, target: '_blank', rel: 'noopener' }, `Open ${res.filename}`)
+      );
+      fallback.hidden = false;
+      go.disabled = false;
+      go.textContent = 'Export again';
+      toast(res.clamped ? 'Exported at a reduced resolution' : 'Export ready');
     } catch (e) {
       status.textContent = '';
       toast('Export failed: ' + e.message, 'err');

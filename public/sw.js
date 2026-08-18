@@ -5,7 +5,7 @@
  * Bump CACHE when you ship a change, or clients keep serving the old shell.
  */
 
-const CACHE = 'familytree-v3';
+const CACHE = 'familytree-v5';
 
 const SHELL = [
   './',
@@ -20,6 +20,7 @@ const SHELL = [
   './exporter.js',
   './outline.js',
   './order.js',
+  './people.js',
   './demo.js',
   './icon.svg',
   './manifest.webmanifest',
@@ -62,19 +63,37 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Assets: serve from cache immediately, refresh in the background.
+  // Code and styles go network-first, same as navigations.
+  //
+  // Filenames here are unhashed, so serving them cache-first meant a redeploy could
+  // pair a fresh index.html with last release's app.js until the next reload — a
+  // version skew that shows up as features half-working. The shell is ~120KB, and
+  // the cache still backs it offline, so the round trip is worth the correctness.
+  const isCode = /\.(?:js|css|webmanifest)$/.test(new URL(req.url).pathname);
+
   e.respondWith(
-    caches.match(req).then((hit) => {
-      const network = fetch(req)
-        .then((res) => {
-          if (res.ok) {
-            const copy = res.clone();
-            caches.open(CACHE).then((c) => c.put(req, copy));
-          }
-          return res;
+    (isCode
+      ? fetch(req)
+          .then((res) => {
+            if (res.ok) {
+              const copy = res.clone();
+              caches.open(CACHE).then((c) => c.put(req, copy));
+            }
+            return res;
+          })
+          .catch(() => caches.match(req))
+      : caches.match(req).then((hit) => {
+          const network = fetch(req)
+            .then((res) => {
+              if (res.ok) {
+                const copy = res.clone();
+                caches.open(CACHE).then((c) => c.put(req, copy));
+              }
+              return res;
+            })
+            .catch(() => hit);
+          return hit || network;
         })
-        .catch(() => hit);
-      return hit || network;
-    })
+    ).then((res) => res || fetch(req))
   );
 });

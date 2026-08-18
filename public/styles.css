@@ -166,6 +166,21 @@ textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, m
 .o-name em { color: var(--text-mute); font-style: normal; font-size: 11px; }
 .o-name .yr { color: var(--text-mute); font-size: 11px; font-variant-numeric: tabular-nums; }
 
+/* one heading per marriage, shown only when a person has more than one */
+.o-group + .o-group { margin-top: 2px; }
+.o-grouphead {
+  display: flex; align-items: center; gap: 4px;
+  padding: 3px 6px; margin-top: 2px; border-radius: 6px;
+  font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text-mute);
+}
+.o-grouphead:hover { background: var(--bg-3); }
+.o-grouphead.loose { font-style: italic; text-transform: none; letter-spacing: 0; }
+.o-groupname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.o-grouphead .o-tools { display: none; }
+.o-grouphead:hover .o-tools { display: flex; }
+.o-grouphead.drop-inside { box-shadow: inset 0 0 0 1.5px var(--accent); background: #22314a; }
+
 /* drag to reorder — the drop line shows where the branch will land */
 .o-row.dragging { opacity: .4; }
 .o-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
@@ -203,6 +218,9 @@ textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, m
   color: var(--text-mute); display: flex; align-items: center; gap: 8px;
 }
 .insp-sec > h4::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+/* Which spouse a canvas click landed on, when there are several. */
+.insp-sec.sel { margin: 0 -8px; padding: 8px; border-radius: 8px; background: var(--bg-3); }
+.insp-sec.sel > h4 { color: var(--accent); }
 .photo-row { display: flex; align-items: center; gap: 10px; }
 .photo-thumb {
   width: 54px; height: 54px; border-radius: 50%; flex: 0 0 54px;
@@ -232,6 +250,8 @@ textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, m
 .frame-zoom > span:first-child { color: var(--text-mute); flex: 0 0 auto; }
 .frame-zoom > input { flex: 1; accent-color: var(--accent); }
 .frame-zoom-val { flex: 0 0 46px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text-mute); }
+.frame-fit { display: flex; justify-content: flex-end; margin-top: 8px; }
+.frame-fit .btn[disabled] { opacity: .45; pointer-events: none; }
 .frame-hint { margin: 10px 0 0; font-size: 12px; line-height: 1.5; }
 .insp-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .insp-actions .btn { flex: 1 1 auto; }
@@ -252,6 +272,7 @@ textarea { resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, m
 .modal-head { padding: 16px 18px; border-bottom: 1px solid var(--line); display: flex; align-items: center; }
 .modal-body { padding: 18px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
 .modal-body p { margin: 0; font-size: 13px; color: var(--text-dim); line-height: 1.6; }
+.modal-body a { color: var(--accent); }
 .modal-foot { padding: 14px 18px; border-top: 1px solid var(--line); display: flex; gap: 8px; justify-content: flex-end; }
 .modal-foot .left { margin-right: auto; }
 

@@ -1,7 +1,37 @@
 import { renderSVG } from './render.js';
 import { photoDataURL, photoSize, primeRefs } from './store.js';
+import { spousesOf } from './people.js';
 
 const MAX_CANVAS_DIM = 15000; // stay clear of browser canvas limits
+
+/**
+ * Browsers cap a canvas by total area as well as by side, and the ceiling varies
+ * wildly — desktop Chrome allows 2^28 pixels, iOS Safari roughly 2^24. Over the
+ * limit nothing throws: `getContext` still hands back a context, drawing silently
+ * does nothing, and `toBlob` hands back a blank image or null. So rather than
+ * guessing a number per browser, allocate the canvas we actually want and prove
+ * the far corner is addressable before drawing the tree into it.
+ */
+function makeCanvas(w, h) {
+  if (!(w > 0) || !(h > 0)) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  if (canvas.width !== w || canvas.height !== h) return null;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  try {
+    // Probe before anything is drawn, so a tainted canvas can never be the reason
+    // this read fails.
+    ctx.fillStyle = '#ff0000';
+    ctx.fillRect(w - 1, h - 1, 1, 1);
+    if (ctx.getImageData(w - 1, h - 1, 1, 1).data[0] !== 255) return null;
+  } catch {
+    return null; // out of memory, or the canvas is bigger than this browser allows
+  }
+  ctx.clearRect(0, 0, w, h);
+  return { canvas, ctx };
+}
 
 /* ------------------------------------------------------ photo inlining */
 
@@ -25,7 +55,7 @@ function collectPhotos(tree) {
   const walk = (p) => {
     if (!p) return;
     if (p.photo) urls.add(p.photo);
-    if (p.spouse && p.spouse.photo) urls.add(p.spouse.photo);
+    for (const s of spousesOf(p)) if (s.photo) urls.add(s.photo);
     (p.children || []).forEach(walk);
   };
   walk(tree.root);
@@ -49,17 +79,29 @@ async function renderToCanvas(tree, scale, onProgress) {
   });
 
   const fit = Math.min(1, MAX_CANVAS_DIM / Math.max(width * scale, height * scale));
-  const s = scale * fit;
 
   onProgress?.('Rendering…');
   const img = await loadImage('data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg));
 
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(width * s);
-  canvas.height = Math.round(height * s);
-  const ctx = canvas.getContext('2d');
+  // Step down until the browser genuinely gives us a canvas this big. Falling back
+  // to a smaller export is much better than handing the user a blank sheet, which
+  // is what an over-sized canvas quietly produces.
+  let s = scale * fit;
+  let made = null;
+  while (s > 0.05) {
+    made = makeCanvas(Math.round(width * s), Math.round(height * s));
+    if (made) break;
+    s = s / 2;
+  }
+  if (!made) throw new Error('This tree is too large for your browser to export. Try a lower resolution.');
+
+  const { canvas, ctx } = made;
+  // JPEG has no alpha, so anything left transparent would composite to black in the
+  // PDF. Templates paint their own backdrop, but a white floor costs nothing.
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-  return { canvas, clamped: fit < 1 };
+  return { canvas, scale: s, clamped: s < scale };
 }
 
 function loadImage(src) {
@@ -71,8 +113,15 @@ function loadImage(src) {
   });
 }
 
+// toBlob reports failure by handing back null — encoding a canvas this big can run
+// the tab out of memory. Turn that into an error the export modal can show.
 const canvasBlob = (canvas, type, q) =>
-  new Promise((res) => canvas.toBlob(res, type, q));
+  new Promise((res, rej) =>
+    canvas.toBlob((b) => {
+      if (b && b.size) res(b);
+      else rej(new Error('Your browser ran out of memory encoding the image. Try a lower resolution.'));
+    }, type, q)
+  );
 
 /* -------------------------------------------------------------- exports */
 
@@ -80,8 +129,8 @@ export async function exportPNG(tree, { scale = 2, onProgress } = {}) {
   const { canvas, clamped } = await renderToCanvas(tree, scale, onProgress);
   onProgress?.('Writing PNG…');
   const blob = await canvasBlob(canvas, 'image/png');
-  download(blob, `${slug(tree.name)}.png`);
-  return { clamped, width: canvas.width, height: canvas.height };
+  const saved = download(blob, `${slug(tree.name)}.png`);
+  return { clamped, width: canvas.width, height: canvas.height, ...saved };
 }
 
 const PAGES = {
@@ -94,14 +143,15 @@ const PAGES = {
 };
 
 export async function exportPDF(tree, { scale = 2, page = 'fit', onProgress } = {}) {
-  const { canvas, clamped } = await renderToCanvas(tree, scale, onProgress);
+  const { canvas, clamped, scale: used } = await renderToCanvas(tree, scale, onProgress);
   onProgress?.('Writing PDF…');
   const blob = await canvasBlob(canvas, 'image/jpeg', 0.94);
   const jpeg = new Uint8Array(await blob.arrayBuffer());
 
-  // Points, at 96 CSS px per inch.
-  const nativeW = (canvas.width / scale) * 0.75;
-  const nativeH = (canvas.height / scale) * 0.75;
+  // Points, at 96 CSS px per inch. Divide by the scale actually rendered at, not the
+  // one asked for — otherwise a downscaled export claims a page far bigger than the tree.
+  const nativeW = (canvas.width / used) * 0.75;
+  const nativeH = (canvas.height / used) * 0.75;
 
   let pageW, pageH, drawW, drawH, drawX, drawY;
   if (page === 'fit') {
@@ -128,8 +178,8 @@ export async function exportPDF(tree, { scale = 2, page = 'fit', onProgress } = 
     title: tree.name || 'Family Tree',
     pageW, pageH, drawW, drawH, drawX, drawY,
   });
-  download(new Blob([pdf], { type: 'application/pdf' }), `${slug(tree.name)}.pdf`);
-  return { clamped, pageW, pageH };
+  const saved = download(new Blob([pdf], { type: 'application/pdf' }), `${slug(tree.name)}.pdf`);
+  return { clamped, pageW, pageH, ...saved };
 }
 
 /* --------------------------------------------------- minimal PDF writer */
@@ -200,15 +250,31 @@ const pdfString = (s) =>
 
 /* --------------------------------------------------------------- helpers */
 
+/**
+ * Save a blob to the user's device.
+ *
+ * The anchor + `download` trick is the happy path, but it is not universal: iOS
+ * Safari only honours `download` for same-origin URLs, and the in-app browsers
+ * (Instagram, Facebook, WhatsApp) ignore it outright. There the click silently
+ * does nothing, which is exactly what "I can't download the PDF" looks like.
+ *
+ * `showSaveFilePicker` is tried first where it exists, and anything without
+ * working `download` support falls back to opening the file in a new tab so the
+ * user can save it from the viewer.
+ */
 export function download(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
+  a.rel = 'noopener';
   document.body.appendChild(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
+  // Kept alive well past the click so the manual fallback link stays usable, and
+  // because a slow mobile viewer may not have opened the blob by the 5s mark.
+  setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
+  return { url, filename };
 }
 
 export function slug(name) {
