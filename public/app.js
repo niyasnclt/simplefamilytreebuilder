@@ -3,7 +3,7 @@ import {
   DEFAULT_FIT, MAX_ZOOM, MIN_ZOOM,
 } from './render.js';
 import { TEMPLATES, byId } from './templates.js';
-import { exportPNG, exportPDF, forgetPhotoCache, download, slug } from './exporter.js';
+import { exportPNG, exportPDF, forgetPhotoCache, download, saveFile, canShareFile, slug } from './exporter.js';
 import { parseOutline, toOutline, uid } from './outline.js';
 import { isAuto, sortBranch, sortChildren, countUndated, personBirth, ORDER_LABEL } from './order.js';
 import { spousesOf, drawnSpouses, groupChildren, setSpouses, blankSpouse, forgetSpouse } from './people.js';
@@ -1267,6 +1267,29 @@ function exportModal() {
   let page = 'fit';
 
   const status = el('p', {}, '');
+
+  /**
+   * The save is deliberately a second tap.
+   *
+   * Rendering a tree takes longer than the ~5s of transient user activation a
+   * browser grants a tap, and phones refuse a download once it has lapsed — which
+   * is why "Export" appeared to do nothing on mobile. So rendering finishes first,
+   * then this button offers the finished file with a gesture of its own.
+   */
+  const save = el('a', { class: 'btn primary', href: '#' }, 'Save');
+  const ready = el('p', { class: 'tiny' }, '');
+  let made = null; // the rendered file, waiting for the user to save it
+
+  // Anything that changes the output invalidates what's currently on offer.
+  function stale() {
+    if (save.href.startsWith('blob:')) URL.revokeObjectURL(save.href);
+    made = null;
+    save.hidden = true;
+    save.removeAttribute('href');
+    ready.hidden = true;
+  }
+  stale();
+
   const chips = (opts, get, set) => {
     const row = el('div', { class: 'opt-row' });
     const paint = () =>
@@ -1298,12 +1321,10 @@ function exportModal() {
     const w = Math.round(lastSize.width * scale);
     const h = Math.round(lastSize.height * scale);
     status.textContent = `Output: ${w} × ${h} px${format === 'pdf' && page === 'fit' ? ' (page sized to the tree)' : ''}`;
+    // Whatever was rendered no longer matches the options on screen.
+    stale();
+    go.textContent = 'Export';
   }
-
-  // Some browsers — notably the in-app ones in Instagram and Facebook — quietly
-  // ignore a download, so always leave the finished file reachable by hand.
-  const fallback = el('p', { class: 'tiny' }, '');
-  fallback.hidden = true;
 
   const go = el('button', { class: 'btn primary', onclick: run }, 'Export');
   const m = modal({
@@ -1313,15 +1334,29 @@ function exportModal() {
       el('label', { class: 'field' }, el('span', {}, 'Resolution'), qty.row),
       pageField,
       status,
-      fallback,
+      ready,
     ],
-    foot: [el('button', { class: 'btn ghost', onclick: () => m.close() }, 'Cancel'), go],
+    foot: [el('button', { class: 'btn ghost', onclick: () => m.close() }, 'Close'), save, go],
   });
   repaintAll();
 
+  // The href alone already saves the file on a plain tap; this only upgrades it to
+  // the OS share sheet where that exists, and must not swallow the default if the
+  // share never happens.
+  save.addEventListener('click', async (e) => {
+    if (!made || !canShareFile(made.blob, made.filename)) return;
+    e.preventDefault();
+    try {
+      const how = await saveFile(made.blob, made.filename);
+      if (how === 'shared') toast('Saved');
+    } catch (err) {
+      toast('Could not save: ' + err.message, 'err');
+    }
+  });
+
   async function run() {
     go.disabled = true;
-    fallback.hidden = true;
+    stale();
     const onProgress = (msg) => (status.textContent = msg);
     try {
       await flushSave();
@@ -1330,17 +1365,21 @@ function exportModal() {
           ? await exportPNG(state.tree, { scale, onProgress })
           : await exportPDF(state.tree, { scale, page, onProgress });
 
+      made = res;
+      // A real href, so the link works by tap, long-press or "download linked file"
+      // even if the click handler above is blocked.
+      save.href = URL.createObjectURL(res.blob);
+      save.download = res.filename;
+      save.textContent = canShareFile(res.blob, res.filename) ? 'Save or share' : `Save ${format.toUpperCase()}`;
+      save.hidden = false;
+
       status.textContent = res.clamped
-        ? 'Exported at a lower resolution — the full size is more than this browser can render.'
-        : 'Export ready.';
-      fallback.replaceChildren(
-        'Nothing downloaded? ',
-        el('a', { href: res.url, download: res.filename, target: '_blank', rel: 'noopener' }, `Open ${res.filename}`)
-      );
-      fallback.hidden = false;
+        ? 'Rendered at a lower resolution — the full size is more than this browser can handle.'
+        : 'Ready.';
+      ready.textContent = `${res.filename} · ${size(res.blob.size)}`;
+      ready.hidden = false;
+      go.textContent = 'Render again';
       go.disabled = false;
-      go.textContent = 'Export again';
-      toast(res.clamped ? 'Exported at a reduced resolution' : 'Export ready');
     } catch (e) {
       status.textContent = '';
       toast('Export failed: ' + e.message, 'err');

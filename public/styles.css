@@ -28,8 +28,12 @@ body {
   overflow: hidden;
 }
 
+/* Any author `display` beats the UA rule for [hidden], so .field and a.btn were
+   staying on screen after being hidden — the export dialog kept showing Page size
+   while PNG was selected. Settle it once, here. */
+[hidden] { display: none !important; }
+
 .view { height: 100vh; display: flex; flex-direction: column; }
-.view[hidden] { display: none; }
 .muted { color: var(--text-mute); }
 .tiny { font-size: 12px; }
 .spacer { flex: 1; }
@@ -48,6 +52,7 @@ body {
   white-space: nowrap;
   transition: background .12s, border-color .12s, opacity .12s;
 }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; }
 .btn:hover { background: #28303d; }
 .btn:active { transform: translateY(1px); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }

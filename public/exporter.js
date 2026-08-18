@@ -129,8 +129,7 @@ export async function exportPNG(tree, { scale = 2, onProgress } = {}) {
   const { canvas, clamped } = await renderToCanvas(tree, scale, onProgress);
   onProgress?.('Writing PNG…');
   const blob = await canvasBlob(canvas, 'image/png');
-  const saved = download(blob, `${slug(tree.name)}.png`);
-  return { clamped, width: canvas.width, height: canvas.height, ...saved };
+  return { blob, filename: `${slug(tree.name)}.png`, clamped, width: canvas.width, height: canvas.height };
 }
 
 const PAGES = {
@@ -178,8 +177,11 @@ export async function exportPDF(tree, { scale = 2, page = 'fit', onProgress } = 
     title: tree.name || 'Family Tree',
     pageW, pageH, drawW, drawH, drawX, drawY,
   });
-  const saved = download(new Blob([pdf], { type: 'application/pdf' }), `${slug(tree.name)}.pdf`);
-  return { clamped, pageW, pageH, ...saved };
+  return {
+    blob: new Blob([pdf], { type: 'application/pdf' }),
+    filename: `${slug(tree.name)}.pdf`,
+    clamped, pageW, pageH,
+  };
 }
 
 /* --------------------------------------------------- minimal PDF writer */
@@ -262,6 +264,19 @@ const pdfString = (s) =>
  * working `download` support falls back to opening the file in a new tab so the
  * user can save it from the viewer.
  */
+/**
+ * Save a blob by synthesising a click on a download link.
+ *
+ * This is the desktop path, and it is why phones could not download: a browser
+ * only honours a programmatic download while it still holds *transient user
+ * activation*, which expires about five seconds after the tap. Rendering a tree
+ * takes longer than that — inlining photos, rasterising, encoding a JPEG — so by
+ * the time this ran the gesture was long gone. Desktop browsers are lenient about
+ * it; mobile Safari and Chrome are not, and drop the download with no error.
+ *
+ * So this stays for the small, instant saves (JSON, backups) that still run inside
+ * the gesture. Anything slow must go through `saveFile` on a fresh tap instead.
+ */
 export function download(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -271,10 +286,51 @@ export function download(blob, filename) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  // Kept alive well past the click so the manual fallback link stays usable, and
-  // because a slow mobile viewer may not have opened the blob by the 5s mark.
-  setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
   return { url, filename };
+}
+
+/**
+ * True when handing this file to the OS share sheet is the better route.
+ *
+ * Only on touch devices. Desktop Chrome also advertises `share`, but there a
+ * download is what people expect and the share sheet would be a regression; on a
+ * phone it is the opposite, since the sheet is what offers "Save to Files" and
+ * "Save Image" and is the one path that survives the in-app browsers.
+ */
+export function canShareFile(blob, filename) {
+  try {
+    if (!matchMedia('(pointer: coarse)').matches) return false;
+    return !!(
+      navigator.canShare &&
+      navigator.share &&
+      navigator.canShare({ files: [new File([blob], filename, { type: blob.type })] })
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Save an already-rendered file. Must be called straight from a user gesture.
+ *
+ * On a phone the share sheet is the only route that reliably ends with the file
+ * on the device — it offers "Save to Files" and "Save Image", and unlike a
+ * download it works inside the in-app browsers too. Everywhere else, and if the
+ * user dismisses the sheet, fall back to the download link.
+ */
+export async function saveFile(blob, filename) {
+  if (canShareFile(blob, filename)) {
+    try {
+      await navigator.share({ files: [new File([blob], filename, { type: blob.type })] });
+      return 'shared';
+    } catch (e) {
+      // Dismissing the sheet is a choice, not a failure — don't then force a download.
+      if (e && (e.name === 'AbortError' || e.name === 'NotAllowedError')) return 'cancelled';
+    }
+  }
+  download(blob, filename);
+  return 'downloaded';
 }
 
 export function slug(name) {
