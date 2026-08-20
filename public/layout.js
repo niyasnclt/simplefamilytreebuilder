@@ -10,9 +10,17 @@
 //   'generations' One column per generation, strictly. Siblings stack vertically.
 //                 Taller, but every column is exactly one generation deep.
 //
-// In both, a person is drawn beside their spouses — one portrait each, joined
-// left to right by a marriage bar — and children with no descendants of their
-// own hang in a row directly below.
+//   'compact'     Top-down, the way a printed family chart is normally drawn: the
+//                 oldest couple at the top and one row per generation beneath it,
+//                 children centred under their parents. The most condensed of the
+//                 three, because a row is only as tall as one portrait plus one
+//                 name — there are no leaf blocks hanging off the side.
+//
+// In all three, a person is drawn beside their spouses — one portrait each,
+// joined left to right by a marriage bar. In 'flow' and 'generations' children
+// with no descendants of their own hang in a row directly below their parents;
+// in 'compact' there is no such distinction, since every child is already on the
+// row below.
 //
 // Name text is wrapped here (not in the renderer) so the space reserved for a
 // name and the space it actually occupies are always the same.
@@ -20,24 +28,77 @@
 import { wrapToWidth, approxWidth, LINE_H } from './text.js';
 import { drawnSpouses, groupChildren } from './people.js';
 
-export const M = {
-  headPhoto: 78,
-  leafPhoto: 62,
+/**
+ * Portrait diameter per the tree's "Portrait size" setting.
+ *
+ * Only the portraits change size — names, gaps and connectors keep theirs. That
+ * is the whole point of the setting: a sheet is fitted to the page by scaling the
+ * finished drawing down, so growing everything together would print exactly as it
+ * did before. Growing only the portraits gives faces a bigger share of the paper,
+ * which is what makes them readable on an A4 print.
+ *
+ * Bigger portraits also widen the name budget (`nameBudget` is measured off the
+ * diameter), so longer names wrap onto fewer lines rather than colliding.
+ */
+export const PORTRAIT = {
+  standard: { headPhoto: 78, leafPhoto: 62 },
+  large: { headPhoto: 96, leafPhoto: 76 },
+  xlarge: { headPhoto: 116, leafPhoto: 92 },
+};
+
+// What a tree with no setting of its own gets — including every tree saved before
+// the setting existed, which is why it isn't 'standard'.
+export const DEFAULT_PORTRAIT = 'large';
+
+export const portraitSize = (name) => PORTRAIT[name] || PORTRAIT[DEFAULT_PORTRAIT];
+
+/**
+ * Every gap on the sheet, at 'normal'. The "Spacing" setting scales all of them
+ * together — which is the only honest way to tighten a drawing: shrink one gap
+ * and the crowding just moves somewhere else.
+ *
+ * Name gaps and font sizes are deliberately not in here. They are typography, not
+ * spacing, and squeezing a label against its portrait reads as a mistake rather
+ * than as a denser chart.
+ */
+const GAPS = {
   coupleGap: 24, // gap between the two portraits of a couple
-  headFS: 12.5,
-  leafFS: 11,
-  headNameGap: 10, // head portrait top → last name line
-  leafNameGap: 6, // leaf portrait bottom → first name line
   colGap: 108, // between generation columns ('generations')
   flowGap: 74, // between columns ('flow')
+  genGap: 64, // between generation rows ('compact') — the connectors run in here
   sibGap: 46, // between sibling blocks / bands
   leafGap: 34, // between leaf children
   leafDrop: 66, // head portrait bottom → leaf portrait top
   leafRowGap: 26,
   laneDrop: 20, // head portrait bottom → sibling connector lane
   laneStep: 16, // between the lanes of one person's separate marriages
-  maxLeafPerRow: 4,
   pad: 64,
+};
+
+export const SPACING = { roomy: 1.3, normal: 1, tight: 0.72, tightest: 0.52 };
+export const DEFAULT_SPACING = 'normal';
+
+/** The gap metrics scaled by one of the SPACING factors. */
+function gapsFor(name) {
+  const k = SPACING[name] || SPACING[DEFAULT_SPACING];
+  if (k === 1) return GAPS;
+  const out = {};
+  // Every gap has a connector or a name in it somewhere, so nothing is allowed to
+  // close up completely however tight the setting.
+  for (const [key, v] of Object.entries(GAPS)) out[key] = Math.max(8, Math.round(v * k));
+  return out;
+}
+
+export const M = {
+  // Portraits and gaps are both overwritten per tree by layoutTree; these are only
+  // the defaults for anything that reads M before a layout has run.
+  ...PORTRAIT[DEFAULT_PORTRAIT],
+  ...GAPS,
+  headFS: 12.5,
+  leafFS: 11,
+  headNameGap: 10, // head portrait top → last name line
+  leafNameGap: 6, // leaf portrait bottom → first name line
+  maxLeafPerRow: 4,
 };
 
 export const hasKids = (p) => !!(p && p.children && p.children.length);
@@ -180,7 +241,9 @@ function annotate(node, cfg) {
 /* ------------------------------------------------------------ emitters */
 
 function emitCouple(out, person, x, y, d, kind, lines) {
-  const below = kind === 'leaf';
+  // Only a 'head' carries its name above the portrait; leaves and every row of a
+  // top-down chart read better with the name underneath.
+  const below = kind !== 'head';
   const put = (px, key, side, who, label) =>
     out.nodes.push({
       key,
@@ -450,21 +513,165 @@ function placeGen(node, x, y, out) {
   return self;
 }
 
+/* ----------------------------------------------------- mode: 'compact' */
+
+/**
+ * Children split by which marriage they belong to, in the order the spouses
+ * stand. One group is the ordinary case; a person married more than once gets a
+ * group per marriage, so each set of children can hang from its own bar.
+ */
+function marriageGroups(node) {
+  const kids = node.children || [];
+  if (!kids.length) return [];
+  if (spousesFor(node).length < 2) return [{ pos: null, children: kids }];
+  const split = groupChildren(node, kids);
+  return [...split.groups, { pos: null, children: split.loose }].filter((g) => g.children.length);
+}
+
+/**
+ * Measure one person and everything below them, bottom-up.
+ *
+ * `blockW` is the width the whole branch needs. A parent narrower than its
+ * children gets centred over them; a parent wider than its children has the
+ * children centred underneath instead — which is how a lone child ends up
+ * directly below a couple rather than off to one side.
+ *
+ * Row heights are collected per depth as we go, because a generation is drawn on
+ * one line: the tallest name in a row sets the height for everyone in it.
+ */
+function measureCompact(node, depth, cfg, rows) {
+  const d = depth === 0 ? M.headPhoto : M.leafPhoto;
+  const lines = nameLines(node, d, depth === 0 ? M.headFS : M.leafFS, cfg);
+  const nameH = lineCount(lines) * LINE_H + M.leafNameGap;
+  rows[depth] = Math.max(rows[depth] || 0, d + nameH);
+
+  const groups = marriageGroups(node).map((g) => {
+    const kids = g.children.map((c) => measureCompact(c, depth + 1, cfg, rows));
+    return {
+      pos: g.pos,
+      kids,
+      w: kids.reduce((a, k) => a + k.blockW, 0) + (kids.length - 1) * M.leafGap,
+    };
+  });
+
+  const kidsW = groups.length
+    ? groups.reduce((a, g) => a + g.w, 0) + (groups.length - 1) * M.sibGap
+    : 0;
+  const w = coupleWidth(node, d);
+  return { node, depth, d, lines, nameH, w, groups, kidsW, blockW: Math.max(w, kidsW) };
+}
+
+/**
+ * Top-down layout. Generations descend, every row is one generation, and the
+ * connectors run in the gap between two rows.
+ */
+function layoutCompact(root, cfg) {
+  const out = { nodes: [], edges: [] };
+  const rows = [];
+  const m = measureCompact(root, 0, cfg, rows);
+
+  // Row tops, from the tallest entry in each generation.
+  const rowY = [];
+  let y = M.pad;
+  for (let i = 0; i < rows.length; i++) {
+    rowY[i] = y;
+    y += rows[i] + M.genGap;
+  }
+
+  const place = (unit, left) => {
+    const groups = unit.groups;
+    const top = rowY[unit.depth];
+
+    // Children first: a parent is centred on the children it turns out to have.
+    let cursor = left + (unit.blockW - unit.kidsW) / 2;
+    const centres = [];
+    for (const g of groups) {
+      g.placed = g.kids.map((kid) => {
+        const c = place(kid, cursor);
+        cursor += kid.blockW + M.leafGap;
+        return c;
+      });
+      cursor += M.sibGap - M.leafGap; // the gap between groups is the wider one
+      centres.push(...g.placed.map((c) => c.selfCX));
+    }
+
+    // Centred between the first and last child, but never hanging outside the
+    // branch's own width — an off-centre grandchild must not drag a parent out
+    // over its neighbour.
+    const wanted = centres.length ? (centres[0] + centres[centres.length - 1]) / 2 : left + unit.blockW / 2;
+    const unitCX = Math.min(
+      left + unit.blockW - unit.w / 2,
+      Math.max(left + unit.w / 2, wanted)
+    );
+    const unitLeft = unitCX - unit.w / 2;
+    emitCouple(out, unit.node, unitLeft, top, unit.d, 'compact', unit.lines);
+
+    const paired = unit.w > unit.d;
+    for (let i = 0; i < groups.length; i++) {
+      const g = groups[i];
+      if (!g.placed.length) continue;
+
+      // Where the drop starts: from the middle of the marriage bar, which passes
+      // cleanly down between the two names. A parent drawn alone has a name
+      // directly below them, so theirs starts under it instead.
+      const anchorX =
+        g.pos == null
+          ? unitCX
+          : unitLeft + g.pos * (unit.d + M.coupleGap) + unit.d + M.coupleGap / 2;
+      const startY = paired ? top + unit.d / 2 : top + unit.d + unit.nameH;
+
+      // One bus per marriage, stepped apart so two of them never overlap.
+      const busY = top + rows[unit.depth] + M.genGap / 2 + (i - (groups.length - 1) / 2) * M.laneStep;
+      const childTop = rowY[unit.depth + 1];
+      const xs = g.placed.map((c) => c.selfCX);
+
+      if (xs.length === 1 && Math.abs(xs[0] - anchorX) < 0.5) {
+        out.edges.push(`M ${anchorX} ${startY} V ${childTop}`);
+        continue;
+      }
+      out.edges.push(`M ${anchorX} ${startY} V ${busY}`);
+      out.edges.push(`M ${Math.min(anchorX, ...xs)} ${busY} H ${Math.max(anchorX, ...xs)}`);
+      for (const x of xs) out.edges.push(`M ${x} ${busY} V ${childTop}`);
+    }
+
+    // A child is joined by blood, so the line comes down into their own portrait
+    // rather than into the middle of the couple they are drawn beside.
+    return { selfCX: unitLeft + unit.d / 2 };
+  };
+
+  place(m, M.pad);
+  return out;
+}
+
 /* ---------------------------------------------------------------- public */
 
 /**
  * @param {object} root
- * @param {{mode?:'flow'|'generations', maxCols?:number, tracking?:number, serif?:boolean, upper?:boolean}} opts
+ * @param {{mode?:'flow'|'generations'|'compact', maxCols?:number, portrait?:string, spacing?:string, tracking?:number, serif?:boolean, upper?:boolean}} opts
  */
 export function layoutTree(root, opts = {}) {
   const out = { nodes: [], edges: [], width: 200, height: 200 };
   if (!root) return out;
+
+  // Portrait sizes are read straight off M by every emitter and measurer here, so
+  // the tree's choice is applied once, up front, rather than threaded through all
+  // of them. Nothing runs between layouts, so there is no one to see it change.
+  Object.assign(M, portraitSize(opts.portrait), gapsFor(opts.spacing));
 
   const cfg = {
     tracking: opts.tracking ?? 0.9,
     serif: !!opts.serif,
     upper: opts.upper !== false,
   };
+
+  if (opts.mode === 'compact') {
+    // Measures as it goes and never reads _u, so it skips `annotate` entirely.
+    const compact = layoutCompact(root, cfg);
+    out.nodes = compact.nodes;
+    out.edges = compact.edges;
+    return normalise(out);
+  }
+
   annotate(root, cfg);
 
   if (opts.mode === 'generations') {

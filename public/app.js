@@ -3,6 +3,7 @@ import {
   DEFAULT_FIT, MAX_ZOOM, MIN_ZOOM,
 } from './render.js';
 import { TEMPLATES, byId } from './templates.js';
+import { DEFAULT_PORTRAIT, DEFAULT_SPACING } from './layout.js';
 import { exportPNG, exportPDF, forgetPhotoCache, download, saveFile, canShareFile, slug } from './exporter.js';
 import { parseOutline, toOutline, uid } from './outline.js';
 import { isAuto, sortBranch, sortChildren, countUndated, personBirth, ORDER_LABEL } from './order.js';
@@ -1189,7 +1190,8 @@ function designModal() {
       el('label', { class: 'field' }, el('span', {}, 'Arrangement'),
         chips(
           [
-            ['flow', 'Flow — compact', 'One band per family branch; descendants chain to the right. Matches the reference layout.'],
+            ['compact', 'Chart — top-down', 'The oldest couple at the top and one row per generation below, children centred under their parents. The most condensed — best for fitting a whole family on one sheet.'],
+            ['flow', 'Flow — banded', 'One band per family branch; descendants chain to the right. Matches the reference artwork.'],
             ['generations', 'Generations — strict', 'One column per generation exactly. Taller, but generations line up.'],
           ],
           () => t.layout || 'flow',
@@ -1197,6 +1199,27 @@ function designModal() {
         )),
       el('label', { class: 'field' }, el('span', {}, 'Columns before a band wraps (Flow only)'),
         chips([[4, '4'], [5, '5'], [6, '6'], [8, '8']], () => t.maxCols || 6, (v) => (t.maxCols = v))),
+      el('label', { class: 'field' }, el('span', {}, 'Spacing'),
+        chips(
+          [
+            ['roomy', 'Roomy', 'Generous gaps — a sparse tree that fills the sheet.'],
+            ['normal', 'Normal', 'The standard gaps.'],
+            ['tight', 'Tight', 'Everything drawn closer together, so portraits take more of the sheet.'],
+            ['tightest', 'Tightest', 'As close as the connectors and names allow.'],
+          ],
+          () => t.spacing || DEFAULT_SPACING,
+          (v) => (t.spacing = v)
+        )),
+      el('label', { class: 'field' }, el('span', {}, 'Portrait size'),
+        chips(
+          [
+            ['standard', 'Standard', 'Smaller portraits, more of the sheet given to names and spacing.'],
+            ['large', 'Large', 'Bigger faces without the sheet growing much. Best for printing on A4.'],
+            ['xlarge', 'Extra large', 'Portraits as large as they go — clear even on a small print, though the sheet runs wider.'],
+          ],
+          () => t.portrait || DEFAULT_PORTRAIT,
+          (v) => (t.portrait = v)
+        )),
       el('label', { class: 'field' }, el('span', {}, 'Logo (top-left / above the title)'),
         el('div', { class: 'photo-row' }, logoImg,
           el('div', { class: 'photo-btns' },
@@ -1473,6 +1496,8 @@ function importJSONFlow() {
       template: data.template,
       layout: data.layout,
       maxCols: data.maxCols,
+      portrait: data.portrait,
+      spacing: data.spacing,
       order: data.order,
       logo: data.logo,
       root: data.root,

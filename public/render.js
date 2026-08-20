@@ -95,6 +95,8 @@ export function renderSVG(tree, opts = {}) {
   const L = layoutTree(tree.root, {
     mode: tree.layout || 'flow',
     maxCols: tree.maxCols || 6,
+    portrait: tree.portrait,
+    spacing: tree.spacing,
     tracking: t.tracking,
     serif: !!t.serif,
     upper: t.nameUpper,

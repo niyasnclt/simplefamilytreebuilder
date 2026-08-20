@@ -9,6 +9,7 @@
 
 import { uid } from './outline.js';
 import { spousesOf } from './people.js';
+import { DEFAULT_PORTRAIT, DEFAULT_SPACING } from './layout.js';
 
 const DB_NAME = 'familytree';
 const DB_VERSION = 1;
@@ -76,6 +77,8 @@ function newTree(partial = {}) {
     template: partial.template || 'heritage',
     layout: partial.layout || 'flow',
     maxCols: partial.maxCols || 6,
+    portrait: partial.portrait || DEFAULT_PORTRAIT, // portrait diameter — see layout.js
+    spacing: partial.spacing || DEFAULT_SPACING, // gap scale — see layout.js
     order: partial.order || 'manual', // 'manual' | 'elder' | 'younger' — see order.js
 
     logo: partial.logo || null,
